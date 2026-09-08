@@ -44,7 +44,13 @@ export function useWebSocket(projectId, onEvent) {
   const reconnect = useCallback(() => {
     if (!projectId || !mountedRef.current) return;
     const token = localStorage.getItem('soc_token');
-    if (!token) return;
+    if (!token) {
+      // Cookie-authed session without a stored token (e.g. cleared site
+      // data): WS auth needs the token, but the cookie-based HTTP poll
+      // still works — fall back to it instead of staying dark forever.
+      startPolling(projectId);
+      return;
+    }
 
     // Close any existing connection
     if (wsRef.current) {
@@ -79,8 +85,12 @@ export function useWebSocket(projectId, onEvent) {
       if (!mountedRef.current) return;
       failRef.current += 1;
       if (failRef.current >= 2) {
+        // Socket keeps failing: park on the poller and stop retrying the
+        // socket until the project changes — one transport at a time.
         failRef.current = 0;
+        clearTimeout(retryRef.current);
         startPolling(projectId);
+        return;
       }
       retryRef.current = setTimeout(reconnect, 3000);
     };
@@ -90,9 +100,7 @@ export function useWebSocket(projectId, onEvent) {
 
   useEffect(() => {
     mountedRef.current = true;
-    if (!projectId) return;
-    reconnect();
-    return () => {
+    const cleanup = () => {
       mountedRef.current = false;
       clearTimeout(retryRef.current);
       stopPolling();
@@ -107,6 +115,11 @@ export function useWebSocket(projectId, onEvent) {
       }
       setConnected(false);
     };
+    // Always return cleanup so switching projects (or losing the project)
+    // never leaks the previous socket or poller into the next view.
+    if (!projectId) return cleanup;
+    reconnect();
+    return cleanup;
   }, [projectId, reconnect, stopPolling]);
 
   return { connected };

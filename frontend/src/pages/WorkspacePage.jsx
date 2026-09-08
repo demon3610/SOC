@@ -42,7 +42,7 @@ export function WorkspacePage() {
   const addToast = useToastStore((s) => s.addToast);
   const navigate = useNavigate();
 
-  const { data: projects, refetch } = useQuery({
+  const { data: projects, refetch, isLoading: projectsLoading, isError: projectsError } = useQuery({
     queryKey: ["projects"],
     queryFn: () => api.projects.list(),
   });
@@ -76,6 +76,24 @@ export function WorkspacePage() {
 
   return (
     <div>
+      {projectsLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="bg-white rounded-xl border border-soc-border shadow-lift p-5 animate-pulse">
+              <div className="h-4 bg-soc-card rounded w-1/2 mb-3" />
+              <div className="h-3 bg-soc-card rounded w-3/4 mb-2" />
+              <div className="h-8 bg-soc-card rounded w-full mt-4" />
+            </div>
+          ))}
+        </div>
+      ) : projectsError ? (
+        <div className="glass-card rounded-xl p-8 text-center">
+          <p className="text-sm text-red-600">Failed to load projects</p>
+          <button onClick={() => refetch()} className="mt-3 text-xs bg-white border border-soc-border hover:bg-soc-panel px-3 py-1.5 rounded transition-colors">
+            Retry
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {projects?.map((p) => {
           const status = projectStatus(p);
@@ -192,6 +210,7 @@ export function WorkspacePage() {
           </div>
         </button>
       </div>
+      )}
 
       <AnimatePresence>
         {showModal && (

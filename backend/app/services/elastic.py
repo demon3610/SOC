@@ -33,9 +33,18 @@ def _es_up() -> bool:
         return _es_up_cached
     _last_check = now
     try:
-        host = ELASTICSEARCH_HOSTS.split(",")[0].strip()
-        with urllib.request.urlopen(f"{host.rstrip('/')}/", timeout=0.5):  # noqa: S310 - local health probe
-            _es_up_cached = True
+        host = ELASTICSEARCH_HOSTS.split(",")[0].strip().rstrip("/")
+        # Prefer real cluster health (catches red clusters a root ping
+        # misses); fall back to the root probe for locked-down endpoints.
+        probed = False
+        for path in ("/_cluster/health?timeout=500ms", "/"):
+            try:
+                with urllib.request.urlopen(f"{host}{path}", timeout=0.5):  # noqa: S310 - local health probe
+                    probed = True
+                    break
+            except Exception:
+                continue
+        _es_up_cached = probed
     except Exception:
         _es_up_cached = False
     return _es_up_cached
@@ -129,7 +138,9 @@ def search_events(
         if query:
             must.append({"query_string": {"query": query}})
         if severity:
-            must.append({"term": {"severity": severity}})
+            # Indexed docs carry event_type, not severity — filter the same
+            # field the Mongo fallback path uses so both agree.
+            must.append({"term": {"event_type": severity}})
         if source:
             must.append({"term": {"source": source}})
         if event_type:
@@ -229,11 +240,12 @@ def delete_events_by_query(project_id: int, source: str = None, before: str = No
     """Delete event docs from the ES events index matching project/source/before/hostname.
 
     Called by the log-cleanup flow so ES never resurrects deleted events in
-    search. Returns the deleted count; 0 if ES is down (Mongo is the source of
-    truth, so cleanup still works).
+    search. Returns the deleted count, or -1 when ES was unreachable (Mongo
+    is the source of truth, so cleanup still works — the caller reports the
+    pending sync instead of silently dropping it).
     """
     if not _es_up():
-        return 0
+        return -1
     try:
         must = [{"term": {"project_id": str(project_id)}}]
         if source:
@@ -252,13 +264,13 @@ def delete_events_by_query(project_id: int, source: str = None, before: str = No
         return resp.get("deleted", 0)
     except Exception:
         logger.warning("delete_by_query failed (ES may be down)")
-        return 0
+        return -1
 
 
 def delete_agent_logs_by_query(project_id: int, before: str = None, hostname: str = None) -> int:
-    """Delete raw agent-log docs from the ES agent-logs index."""
+    """Delete raw agent-log docs from the ES agent-logs index (-1 if unreachable)."""
     if not _es_up():
-        return 0
+        return -1
     try:
         must = [{"term": {"project_id": str(project_id)}}]
         if hostname:
@@ -275,4 +287,4 @@ def delete_agent_logs_by_query(project_id: int, before: str = None, hostname: st
         return resp.get("deleted", 0)
     except Exception:
         logger.warning("agent-log delete_by_query failed (ES may be down)")
-        return 0
+        return -1

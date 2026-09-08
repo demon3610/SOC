@@ -38,22 +38,38 @@ function CleanupPreviewList({ preview, scope, isPreviewing }) {
       </div>
     );
   }
+  const refreshing = isPreviewing && preview;
   if (!preview) {
     return (
-      <p className="py-8 text-center text-sm text-soc-muted">
-        Adjust the filters above — the preview runs automatically and shows exactly which rows will be deleted.
-      </p>
+      <div className="flex flex-col items-center justify-center py-8 text-soc-muted">
+        {scope === 'events'
+          ? <Database size={24} strokeWidth={1.5} className="text-slate-400 mb-2" />
+          : <ScrollText size={24} strokeWidth={1.5} className="text-slate-400 mb-2" />}
+        <p className="text-sm text-center">
+          Adjust the filters above — the preview runs automatically and shows exactly which rows will be deleted.
+        </p>
+      </div>
     );
   }
   const rows = preview.sample || [];
   return (
     <div>
+      {refreshing && (
+        <p className="flex items-center gap-1.5 text-[11px] text-soc-muted mb-2">
+          <Loader2 size={12} className="animate-spin" /> Refreshing preview — counts below may be stale…
+        </p>
+      )}
       <div className={`flex items-start justify-between gap-3 mb-3 px-4 py-3 rounded-xl border ${
         preview.count > 0
           ? 'bg-amber-500/10 border-amber-500/30'
           : 'bg-soc-card border-soc-border'
       }`}>
-        <div>
+        <div className={preview.count === 0 ? 'flex flex-col items-center text-center w-full' : undefined}>
+          {preview.count === 0 && (
+            scope === 'events'
+              ? <Database size={24} strokeWidth={1.5} className="text-slate-400 mb-2" />
+              : <ScrollText size={24} strokeWidth={1.5} className="text-slate-400 mb-2" />
+          )}
           <p className="text-sm font-semibold text-soc-text">
             {preview.count > 0
               ? `This will delete ${preview.count.toLocaleString()} ${scope === 'events' ? 'event' : 'raw log'}${preview.count === 1 ? '' : 's'}`
@@ -120,6 +136,7 @@ export function DataCleanupPage() {
   const [confirmText, setConfirmText] = useState('');
   const [error, setError] = useState('');
   const [lastResult, setLastResult] = useState(null);
+  const [lastEsSynced, setLastEsSynced] = useState(true);
   const previewAbort = useRef(0);
 
   const historyQuery = useQuery({
@@ -184,6 +201,7 @@ export function DataCleanupPage() {
         : await api.agentLogs.cleanup(pid, f, preview.count);
       addToast(`Deleted ${res.deleted_count.toLocaleString()} ${tab === 'events' ? 'event' : 'raw log'}${res.deleted_count === 1 ? '' : 's'}`, 'success');
       setLastResult(res.deleted_count);
+      setLastEsSynced(res.es_synced ?? true);
       setConfirmText('');
       setPreview(null);
       queryClient.invalidateQueries({ queryKey: ['events', pid] });
@@ -257,7 +275,10 @@ export function DataCleanupPage() {
           ) : historyQuery.isError ? (
             <p className="py-8 text-center text-sm text-red-600">Failed to load cleanup history</p>
           ) : (historyQuery.data?.cleanups || []).length === 0 ? (
-            <p className="py-8 text-center text-sm text-soc-muted">No cleanups have been executed on this project yet.</p>
+            <div className="flex flex-col items-center justify-center py-8 text-soc-muted">
+              <FileClock size={24} strokeWidth={1.5} className="text-slate-400 mb-2" />
+              <p className="text-sm text-center">No cleanups have been executed on this project yet.</p>
+            </div>
           ) : (
             <div className="border border-soc-border rounded-xl overflow-hidden">
               <table className="w-full text-xs">
@@ -284,7 +305,7 @@ export function DataCleanupPage() {
                       <td className="px-4 py-2 font-mono">{c.hostname_filter || 'all'}</td>
                       <td className="px-4 py-2 font-mono whitespace-nowrap">{formatLocalDate(c.before_timestamp)}</td>
                       <td className="px-4 py-2 text-right font-semibold text-amber-600">
-                        {c.deleted_count.toLocaleString()}
+                        {(c.deleted_count ?? 0).toLocaleString()}
                       </td>
                     </tr>
                   ))}
@@ -367,7 +388,7 @@ export function DataCleanupPage() {
           </div>
 
           <div className="glass-card rounded-xl p-4 mb-4">
-            <CleanupPreviewList preview={preview} scope={tab} isPreviewing={isPreviewing && !preview} />
+            <CleanupPreviewList preview={preview} scope={tab} isPreviewing={isPreviewing} />
           </div>
 
           {error && (
@@ -382,6 +403,11 @@ export function DataCleanupPage() {
                 Deleted {lastResult.toLocaleString()} {tab === 'events' ? 'event' : 'raw log'}{lastResult === 1 ? '' : 's'}.
                 Live Events and the audit history have been refreshed.
               </p>
+              {!lastEsSynced && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  Search index was unreachable — deleted rows may still appear in search-backed views until it recovers.
+                </p>
+              )}
             </div>
           )}
 

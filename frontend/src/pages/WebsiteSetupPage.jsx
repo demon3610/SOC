@@ -1,15 +1,18 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Check, Copy, Download, KeyRound, Loader2 } from 'lucide-react';
+import { Check, Copy, Download, KeyRound, Loader2, Key, ShieldAlert } from 'lucide-react';
 import { api, getWebsiteKey } from '../lib/api';
 import { useProjectStore } from '../stores/projectStore';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { useToastStore } from '../stores/toastStore';
 import { GenerateKeyModal } from '../components/keys/GenerateKeyModal';
 import { PageHeader } from '../components/ui/PageHeader';
 
 export function WebsiteSetupPage() {
   const activeProject = useProjectStore((s) => s.activeProject);
   const pid = activeProject?.id;
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopyToClipboard();
+  const addToast = useToastStore((s) => s.addToast);
   const [showKeyModal, setShowKeyModal] = useState(false);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
@@ -22,12 +25,9 @@ export function WebsiteSetupPage() {
   const prompt = data?.prompt;
   const keyRequired = isError && error?.status === 409;
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     if (!prompt) return;
-    navigator.clipboard.writeText(prompt).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    if (!(await copy(prompt))) addToast('Copy failed — select the text manually', 'error');
   };
 
   const handleDownload = () => {
@@ -54,7 +54,9 @@ export function WebsiteSetupPage() {
 
       {isError && (
         <div className="glass-card rounded-xl p-8 flex flex-col items-center text-center">
-          <span className="text-4xl mb-3">{keyRequired ? '🔑' : '⚠'}</span>
+          {keyRequired
+            ? <Key size={28} strokeWidth={1.5} className="text-slate-400 mb-3" />
+            : <ShieldAlert size={28} strokeWidth={1.5} className="text-slate-400 mb-3" />}
           <p className={`text-sm ${keyRequired ? 'text-amber-600' : 'text-red-600'}`}>
             {keyRequired
               ? 'No usable Website Integration API key yet.'

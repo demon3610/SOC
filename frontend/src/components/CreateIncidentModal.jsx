@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { useToastStore } from '../stores/toastStore';
 
 const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 
@@ -9,12 +11,15 @@ export function CreateIncidentModal({ open, event, projectId, onClose, initialSe
   const [description, setDescription] = useState(initialDescription || '');
   const [severity, setSeverity] = useState('medium');
   const [loading, setLoading] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
 
   useEffect(() => {
     if (open) {
       setSeverity(SEVERITIES.includes(initialSeverity) ? initialSeverity : 'medium');
-      if (initialTitle) setTitle(initialTitle);
-      if (initialDescription) setDescription(initialDescription);
+      setTitle(initialTitle || '');
+      setDescription(initialDescription || '');
     }
   }, [open, initialSeverity, initialTitle, initialDescription]);
 
@@ -22,10 +27,26 @@ export function CreateIncidentModal({ open, event, projectId, onClose, initialSe
 
   const handleCreate = async () => {
     setLoading(true);
+    setCreateError('');
     try {
-      await api.incidents.create(projectId, { title, severity, description: description || null });
+      const context = event ? {
+        hostname: event.hostname || event.raw?.hostname || null,
+        technique: event.mitre?.technique || event.technique || null,
+        event_summary: event.summary || event.raw?.message || null,
+      } : null;
+      await api.incidents.create(projectId, {
+        title: title.trim(),
+        severity,
+        description: description || null,
+        context,
+      });
+      queryClient.invalidateQueries({ queryKey: ['incidents', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['incidents'] });
+      addToast('Incident created', 'success');
       onClose();
-    } catch {}
+    } catch (err) {
+      setCreateError(err.message || 'Failed to create incident');
+    }
     setLoading(false);
   };
 
@@ -54,7 +75,7 @@ export function CreateIncidentModal({ open, event, projectId, onClose, initialSe
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="Incident title"
+          placeholder="Incident title (blank = auto from event context)"
           className="w-full bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:border-soc-accent"
         />
         <textarea
@@ -79,11 +100,14 @@ export function CreateIncidentModal({ open, event, projectId, onClose, initialSe
             </button>
           ))}
         </div>
+        {createError && (
+          <p className="text-xs text-red-600 mb-3">{createError}</p>
+        )}
         <div className="flex justify-end gap-3">
           <button onClick={onClose} className="text-sm text-soc-muted">Cancel</button>
           <button
             onClick={handleCreate}
-            disabled={!title || loading}
+            disabled={loading}
             className="bg-soc-accent hover:bg-soc-accent-glow text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
           >
             {loading ? 'Creating...' : 'Create Incident'}

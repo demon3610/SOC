@@ -206,14 +206,12 @@ def integration_snippet(
     generation instead of handing out a useless placeholder.
     """
     project_id = project["id"]
-    key = db.api_keys.find_one(
-        {"project_id": project_id, "revoked": False},
-        NO_ID,
-        sort=[("created_at", -1)],
-    )
-    if not key:
+    keys = list(db.api_keys.find({"project_id": project_id, "revoked": False}, NO_ID))
+    if not keys:
         raise HTTPException(status_code=409, detail="No active API key. Generate a Website Integration key first.")
-    if not x_api_key or _hash_key(x_api_key) != key["key_hash"]:
+    # A project may hold several active keys — accept any of them, not just
+    # the newest, so older keys keep producing working snippets.
+    if not x_api_key or not any(_hash_key(x_api_key) == k.get("key_hash") for k in keys):
         raise HTTPException(
             status_code=409,
             detail="The Website Integration key is stored hashed and revealed once when generated. Generate a key to get a working filled-in snippet.",
@@ -246,16 +244,13 @@ def website_setup_prompt(
     key exists, a 409 tells the frontend to prompt for key generation.
     """
     project_id = project["id"]
-    key = db.api_keys.find_one(
-        {"project_id": project_id, "revoked": False}, NO_ID,
-        sort=[("created_at", -1)],
-    )
-    if not key:
+    keys = list(db.api_keys.find({"project_id": project_id, "revoked": False}, NO_ID))
+    if not keys:
         raise HTTPException(
             status_code=409,
             detail="No Website Integration API key exists for this project yet. Generate a Website Integration API key first.",
         )
-    if not x_api_key or _hash_key(x_api_key) != key["key_hash"]:
+    if not x_api_key or not any(_hash_key(x_api_key) == k.get("key_hash") for k in keys):
         raise HTTPException(
             status_code=409,
             detail="The Website Integration API key is stored hashed and is only revealed once when generated. Generate a new key to fill the prompt in with real values.",

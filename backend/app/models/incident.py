@@ -4,10 +4,19 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 
+class IncidentContext(BaseModel):
+    """Optional creation context used for auto-titling (event/chain source)."""
+
+    hostname: Optional[str] = None
+    technique: Optional[str] = None
+    event_summary: Optional[str] = None
+
+
 class IncidentCreate(BaseModel):
-    title: str
+    title: Optional[str] = ""
     description: Optional[str] = None
     severity: str = "medium"
+    context: Optional[IncidentContext] = None
 
 
 class IncidentUpdate(BaseModel):
@@ -16,6 +25,8 @@ class IncidentUpdate(BaseModel):
     severity: Optional[str] = None
     status: Optional[str] = None
     assigned_to: Optional[int] = None
+    tags: Optional[list[str]] = None
+    resolution_note: Optional[str] = None
 
 
 class IncidentResponse(BaseModel):
@@ -33,6 +44,12 @@ class IncidentResponse(BaseModel):
     notes: list[dict] = []
     os_types: list[str] = []
     affected_ips: list[str] = []
+    hosts: list[str] = []
+    users: list[str] = []
+    technique_ids: list[str] = []
+    tags: list[str] = []
+    resolved_at: Optional[datetime] = None
+    resolution_note: Optional[str] = None
     risk_score: Optional[float] = None
     risk_average: Optional[float] = None
     mitre_tags: list[dict] = []

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Plus } from 'lucide-react';
+import { Plus, Key, ShieldAlert } from 'lucide-react';
 import { api } from '../lib/api';
 import { useProjectStore } from '../stores/projectStore';
 import { useToastStore } from '../stores/toastStore';
@@ -83,7 +83,7 @@ export function APIKeysPage() {
         type: 'agent',
       };
     }),
-  ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  ].sort((a, b) => (new Date(b.created_at).getTime() || 0) - (new Date(a.created_at).getTime() || 0));
 
   return (
     <div>
@@ -111,7 +111,7 @@ export function APIKeysPage() {
         </div>
       ) : keysError || agentKeysError ? (
         <div className="flex flex-col items-center justify-center py-16 text-soc-muted">
-          <span className="text-4xl mb-2">⚠</span>
+          <ShieldAlert size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
           <p className="text-sm text-red-600">Failed to load API keys</p>
           <button onClick={() => { refetch(); refetchAgentKeys(); }} className="mt-3 text-xs bg-white border border-soc-border hover:bg-soc-panel px-3 py-1.5 rounded transition-colors">
             Retry
@@ -146,7 +146,7 @@ export function APIKeysPage() {
                     {key.os_detail && <span title={key.os_detail} className="truncate max-w-[180px]">{key.os_detail}</span>}
                     {key.hostname && <span>Host: <span className="font-mono text-soc-muted-cool">{key.hostname}</span></span>}
                     {key.ip_address && <span>IP: <span className="font-mono text-soc-muted-cool">{key.ip_address}</span></span>}
-                    <span>Created: {new Date(key.created_at).toLocaleDateString()}</span>
+                    <span>Created: {key.created_at ? new Date(key.created_at).toLocaleDateString() : '—'}</span>
                     {key.last_used_at && <span>Last seen: {new Date(key.last_used_at).toLocaleDateString()}</span>}
                   </div>
                 </div>
@@ -164,7 +164,7 @@ export function APIKeysPage() {
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center py-16 text-soc-muted">
-          <span className="text-4xl mb-2">🔑</span>
+          <Key size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
           <p className="text-sm">No API keys generated</p>
           <p className="text-xs mt-1">Generate a key to start sending events</p>
         </div>

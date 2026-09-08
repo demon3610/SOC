@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { KeyRound } from 'lucide-react';
 import { api } from '../lib/api';
 import { useProjectStore } from '../stores/projectStore';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { useToastStore } from '../stores/toastStore';
 import { PageHeader } from '../components/ui/PageHeader';
 import { GenerateKeyModal } from '../components/keys/GenerateKeyModal';
 
@@ -19,13 +21,16 @@ export function IntegrationsPage() {
   const pid = activeProject?.id;
   const [platform, setPlatform] = useState('website');
   const [systemTab, setSystemTab] = useState('windows');
-  const [snippetTab, setSnippetTab] = useState('script');
-  const [copied, setCopied] = useState(false);
-  const [serverUrl, setServerUrl] = useState(
-    window.location.protocol.startsWith('http')
-      ? `${window.location.protocol}//${window.location.hostname}:8000`
-      : 'http://localhost:8000'
-  );
+  const [copied, copy] = useCopyToClipboard();
+  const addToast = useToastStore((s) => s.addToast);
+  // Dev (vite :5173) talks to the backend on :8000 of the same host; any
+  // other origin IS the backend (same-origin prod), so use it verbatim.
+  // The field stays editable for LAN/exotic setups.
+  const [serverUrl, setServerUrl] = useState(() => {
+    if (!window.location.protocol.startsWith('http')) return 'http://localhost:8000';
+    if (window.location.port === '5173') return `${window.location.protocol}//${window.location.hostname}:8000`;
+    return window.location.origin;
+  });
   const [showKeyModal, setShowKeyModal] = useState(false);
 
   const { data: snippetData, isLoading, isError, error, refetch } = useQuery({
@@ -35,15 +40,10 @@ export function IntegrationsPage() {
     retry: 0,
   });
 
-  const handleCopy = () => {
-    const text = snippetTab === 'script'
-      ? snippetData?.script_tag
-      : snippetData?.ai_agent_prompt;
+  const handleCopy = async () => {
+    const text = snippetData?.ai_agent_prompt;
     if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    if (!(await copy(text))) addToast('Copy failed — select the text manually', 'error');
   };
 
   const systemSnippet = systemTab === 'windows' ? WIN_CMD(serverUrl) : LINUX_CMD(serverUrl);
@@ -124,46 +124,18 @@ export function IntegrationsPage() {
             <>
               <div className="flex items-center justify-between mb-3">
                 <p className="text-sm text-soc-slate">Connect your website</p>
-                <div className="flex rounded-lg border border-soc-border bg-soc-card p-0.5">
-                  {[
-                    { id: 'script', label: 'Script tag' },
-                    { id: 'prompt', label: 'AI agent prompt' },
-                  ].map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => setSnippetTab(t.id)}
-                      className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                        snippetTab === t.id
-                          ? 'bg-soc-accent text-soc-on-accent'
-                          : 'text-soc-muted hover:text-soc-accent'
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
+                <span className="px-3 py-1 text-xs rounded-md bg-soc-accent text-soc-on-accent">
+                  AI agent prompt
+                </span>
               </div>
 
-              {snippetTab === 'script' ? (
-                <>
-                  <p className="text-sm text-soc-muted mb-2">
-                    Add this script tag before the closing head tag on your site:
-                  </p>
-                  <pre className="bg-soc-code border border-soc-border rounded-lg p-4 text-xs font-mono break-all select-all whitespace-pre-wrap max-h-48 overflow-auto">
-                    {snippetData.script_tag}
-                  </pre>
-                </>
-              ) : (
-                <>
-                  <p className="text-xs text-soc-muted/70 mb-2">
-                    Paste this into Cursor, Claude Code, or any IDE AI agent — it will wire up real
-                    logging code in your website's codebase instead of a single script tag.
-                  </p>
-                  <pre className="bg-soc-code border border-soc-border rounded-lg p-4 text-xs font-mono break-all select-all whitespace-pre-wrap max-h-96 overflow-auto">
-                    {snippetData.ai_agent_prompt}
-                  </pre>
-                </>
-              )}
+              <p className="text-xs text-soc-muted/70 mb-2">
+                Paste this into Cursor, Claude Code, or any IDE AI agent — it will wire up real
+                telemetry code in your website's codebase.
+              </p>
+              <pre className="bg-soc-code border border-soc-border rounded-lg p-4 text-xs font-mono break-all select-all whitespace-pre-wrap max-h-96 overflow-auto">
+                {snippetData.ai_agent_prompt}
+              </pre>
               <button
                 onClick={handleCopy}
                 className={`mt-3 text-xs px-3 py-1.5 rounded transition-all duration-200 ${
@@ -172,7 +144,7 @@ export function IntegrationsPage() {
                     : 'bg-soc-panel hover:bg-soc-panel'
                 }`}
               >
-                {copied ? '✔ Copied!' : `Copy ${snippetTab === 'script' ? 'script tag' : 'prompt'}`}
+                {copied ? '✔ Copied!' : 'Copy prompt'}
               </button>
             </>
           )
@@ -194,11 +166,8 @@ export function IntegrationsPage() {
                 {systemSnippet}
               </pre>
               <button
-                onClick={() => {
-                  navigator.clipboard.writeText(systemSnippet).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  });
+                onClick={async () => {
+                  if (!(await copy(systemSnippet))) addToast('Copy failed — select the text manually', 'error');
                 }}
                 className={`mt-3 text-xs px-3 py-1.5 rounded transition-all duration-200 ${
                   copied
@@ -219,8 +188,6 @@ export function IntegrationsPage() {
           initialPlatform="website"
           onClose={() => {
             setShowKeyModal(false);
-            setCopied(false);
-            setSnippetTab('script');
             refetch();
           }}
         />

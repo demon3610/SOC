@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status, Request, Header
 from fastapi.responses import Response
 from jose import JWTError, jwt
-from app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, SECURE_COOKIES
 from app.database import get_db
 
 COOKIE_NAME = "soc_token"
@@ -30,12 +30,17 @@ def create_agent_token(agent_id: int) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def clear_token_cookie(response: Response):
+    # Flags must mirror set_token_cookie or browsers keep the old cookie.
+    response.delete_cookie(key=COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
+
+
 def set_token_cookie(response: Response, token: str):
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=False,
+        secure=SECURE_COOKIES,
         samesite="lax",
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
@@ -52,11 +57,13 @@ def get_current_user(request: Request, db=Depends(get_db)):
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("scope") == "agent":
+            raise HTTPException(status_code=401, detail="Invalid token")
         sub = payload.get("sub")
         if sub is None:
             raise HTTPException(status_code=401, detail="Invalid token")
         user_id = int(sub)
-    except JWTError:
+    except (JWTError, TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid token")
     user = db.users.find_one({"id": user_id})
     if not user:

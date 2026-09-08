@@ -253,10 +253,19 @@ def _enrich(event: dict, request: Request) -> dict:
         enriched["risk_score"] = max(enriched.get("risk_score", 0), detections[0]["score"])
 
     event["enriched"] = enriched
-    if not event.get("timestamp"):
+    # All stored timestamps are offset-form ISO (+00:00), matching the agent
+    # pipeline (_normalize_ts) — cleanup cutoffs compare these strings
+    # lexicographically, and a Z suffix sorts AFTER +00:00 at equal instants.
+    ts = event.get("timestamp")
+    if not ts:
         event["timestamp"] = datetime.now(timezone.utc).isoformat()
-    elif not event["timestamp"].endswith("Z") and "+" not in event["timestamp"]:
-        event["timestamp"] = event["timestamp"] + "Z"
+    else:
+        ts = str(ts)
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        elif "+" not in ts:
+            ts = ts + "+00:00"
+        event["timestamp"] = ts
     return event
 
 

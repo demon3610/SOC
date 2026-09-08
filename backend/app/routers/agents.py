@@ -160,7 +160,7 @@ def create_agent_key(body: AgentKeyCreate, user=Depends(get_current_user), db=De
     hashed = hash_raw_key(raw)
     key = {
         "id": get_next_id("agent_keys"),
-        "label": body.label,
+        "label": body.label.strip(),
         "key_prefix": prefix,
         "key_hash": hashed,
         "status": "pending",
@@ -260,19 +260,26 @@ def enroll(body: EnrollRequest, request: Request, db=Depends(get_db)):
         }
         db.agent_keys.update_one({"id": key["id"]}, {"$set": update})
     elif key["status"] == "active":
-        if key.get("system_fingerprint") == fingerprint or not key.get("system_fingerprint") or key.get("hostname") == body.hostname:
-            db.agent_keys.update_one({"id": key["id"]}, {"$set": {
-                "last_seen_at": now,
-                "ip_address": ip_value,
-                "hostname": body.hostname,
-                "os_type": body.os_type,
-                "system_fingerprint": fingerprint,
-            }})
-        else:
+        # Re-enroll requires an exact fingerprint match. Hostname alone is
+        # attacker-controlled input and must never rebind a key, and the
+        # stored binding is never overwritten by a mismatched caller.
+        # Legacy keys without a stored fingerprint adopt the caller's on
+        # first re-enroll, then behave like all other bound keys.
+        stored = key.get("system_fingerprint")
+        if stored and stored != fingerprint:
             raise HTTPException(
                 status_code=409,
                 detail=f"This API key is already enrolled to a different system ({key.get('hostname')}). Generate a new key for this machine.",
             )
+        update_active: dict = {
+            "last_seen_at": now,
+            "ip_address": ip_value,
+        }
+        if not stored:
+            update_active["system_fingerprint"] = fingerprint
+            update_active["hostname"] = body.hostname
+            update_active["os_type"] = body.os_type
+        db.agent_keys.update_one({"id": key["id"]}, {"$set": update_active})
     token = create_agent_token(key["id"])
     return EnrollResponse(agent_token=token, agent_id=key["id"], log_endpoint="/agents/logs")
 
@@ -281,6 +288,10 @@ def enroll(body: EnrollRequest, request: Request, db=Depends(get_db)):
 def list_agent_logs(
     limit: int = Query(50),
     offset: int = Query(0),
+    hostname: str | None = Query(None),
+    category: str | None = Query(None),
+    project_id: int | None = Query(None),
+    query: str | None = Query(None),
     user=Depends(get_current_user),
     db=Depends(get_db),
 ):
@@ -288,22 +299,33 @@ def list_agent_logs(
     events_windows + events_linux, newest first.
 
     All categories are returned (heartbeat, lifecycle and security_event) —
-    the `category` field lets a client filter client-side; the curated
-    security-event surface is served by GET /projects/{id}/events instead.
+    this is the raw stream Live Events deliberately hides. Server-side
+    filters: exact hostname, category, project_id, and a case-insensitive
+    substring match over summary + raw message.
     """
     agent_ids = [a["id"] for a in db.agent_keys.find({"created_by": user["id"]}, {"id": 1})]
     if not agent_ids:
         return {"logs": [], "total": 0}
-    q = {"agent_id": {"$in": agent_ids}}
+    q: dict = {"agent_id": {"$in": agent_ids}}
+    if hostname:
+        q["hostname"] = hostname
+    if category:
+        q["category"] = category
+    if project_id is not None:
+        q["project_id"] = {"$in": [project_id, str(project_id)]}
+    if query:
+        rx = {"$regex": query, "$options": "i"}
+        q["$or"] = [{"summary": rx}, {"raw.message": rx}]
     docs = []
     total = 0
     for col in agent_events_collections():
         total += col.count_documents(q)
+        # Fetch through the requested page per collection, then slice once in
+        # Python — skipping in both places drops rows across collections.
         docs.extend(
             col.find(q, NO_ID)
             .sort([("timestamp", -1), ("_id", -1)])
-            .skip(offset)
-            .limit(limit)
+            .limit(offset + limit)
         )
     docs.sort(
         key=lambda d: (str(d.get("timestamp", "")), str(d.get("id", ""))),
@@ -496,11 +518,10 @@ def _agent_log_docs(db, q, size: int, offset: int = 0):
         docs.extend(
             col.find(q, NO_ID)
             .sort([("timestamp", -1), ("_id", -1)])
-            .skip(offset)
-            .limit(size)
+            .limit(offset + size)
         )
     docs.sort(key=lambda d: (str(d.get("timestamp", "")), str(d.get("id", ""))), reverse=True)
-    return docs[:size], total
+    return docs[offset: offset + size], total
 
 
 def _oldest_newest_agent_logs(db, q: dict):
@@ -557,7 +578,10 @@ def agent_logs_cleanup(project_id: int, body: CleanupExecute,
                        user=Depends(get_current_user),
                        _project=Depends(get_owned_project), db=Depends(get_db)):
     """Delete raw agent logs; re-validates expected_count (409 on drift),
-    syncs Elasticsearch, and appends an immutable audit entry."""
+    syncs Elasticsearch, and appends an immutable audit entry.
+
+    ``es_synced`` is false when ES was unreachable (Mongo is the source of
+    truth, so the delete itself still holds)."""
     before_dt = _agent_log_cutoff(body.before)
     q = _agent_log_cleanup_query(project_id, body.hostname, before_dt)
 
@@ -577,10 +601,10 @@ def agent_logs_cleanup(project_id: int, body: CleanupExecute,
     for col in agent_events_collections():
         deleted += col.delete_many(q).deleted_count
     before_iso = before_dt.isoformat()
-    delete_agent_logs_by_query(project_id, before_iso, body.hostname)
+    es_deleted = delete_agent_logs_by_query(project_id, before_iso, body.hostname)
 
     record_cleanup(db, user=user, project_id=project_id,
                    source="agent_logs", hostname=body.hostname, before=before_iso,
                    deleted_count=deleted, scope="agent_logs")
-    return {"deleted_count": deleted}
+    return {"deleted_count": deleted, "es_synced": es_deleted >= 0}
 

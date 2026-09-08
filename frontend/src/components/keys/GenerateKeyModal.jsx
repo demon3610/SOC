@@ -30,7 +30,6 @@ export function GenerateKeyModal({ projectId, onClose, initialPlatform = null })
   const handleGenerate = async () => {
     if (!selectedPlatform || !label.trim()) return;
     setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 1200));
 
       try {
         if (selectedPlatform === 'website') {

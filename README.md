@@ -1,79 +1,61 @@
 # SOC Dashboard
 
-A self-hosted, near-real-time **Security Operations Center (SOC)** platform for threat monitoring, log analysis, incident management, and agent oversight.
+A self-hosted **Security Operations Center (SOC)** — one place to watch what happens across your websites and servers, get alerted about attacks, investigate them, and track the response.
 
-Built with a **React (Vite)** frontend, **FastAPI** backend, **MongoDB** (metadata + event persistence), **Elasticsearch** (full-text search & analytics), and native agents for **Windows (PowerShell)**, **Linux (Bash/journald)**, and **Websites (JavaScript snippet)**.
+**In plain English:** you install a small agent on each machine (or add telemetry to a website). Those sources send their logs to this platform. The platform scores everything for danger, shows it live on a dashboard, connects related attacks together, and lets you open *incidents* — cases you investigate, mitigate, and close with a written record.
+
+Built with a **React (Vite)** frontend, **FastAPI** backend, **MongoDB** (durable store), **Elasticsearch** (search accelerator), and native agents for **Windows (PowerShell)**, **Linux (Bash/journald)**, and **websites (AI-generated telemetry code)**.
 
 ---
 
-## System Architecture & Data Pipeline
+## How it works (the 2-minute version)
 
 ```
-              ┌──────────────────────┬─────────────────────┬─────────────────────┐
-              │   Website Snippet    │   Windows Agent     │    Linux Agent      │
-              │      (usp.js)        │   (PowerShell)      │  (Bash + journald)  │
-              └──────────┬───────────┴─────────┬───────────┴──────────┬──────────┘
-                         │                     │                      │
-              POST /ingest/event      POST /agents/logs/bulk   POST /agents/logs/bulk
-                         │                     │                      │
-                         ▼                     ▼                      ▼
-        ┌───────────────────────────────────────────────────────────────────────┐
-        │                          FASTAPI BACKEND ENGINE                       │
-        │     auth → validate API key → parse & normalize → severity → enrich    │
-        │     (GeoIP, threat-feed) → risk score → persist → WebSocket broadcast  │
-        └──────┬──────────────────────────────┬──────────────────────┬──────────┘
-               │                              │                      │
-               ▼                              ▼                      ▼
-   ┌────────────────────────┐   ┌──────────────────────────┐   ┌────────────────────┐
-   │     ELASTICSEARCH      │   │         MONGODB          │   │     WEBSOCKET      │
-   │  (full-text search,    │   │ users, projects, api_    │   │  live event stream │
-   │   events + agent-logs  │   │ keys, agent_keys,        │   │  /ws/projects/…    │
-   │   indices)             │   │ events_website/windows/  │   └─────────┬──────────┘
-   │                        │   │ linux, incidents         │             │
-   └────────────────────────┘   └──────────────────────────┘   ┌─────────┴──────────┐
-                                                                          ▼
-                                                              ┌────────────────────┐
-                                                              │  REACT DASHBOARD   │
-                                                              │   :5173 (nginx)    │
-                                                              └────────────────────┘
+  Website telemetry     Windows agent        Linux agent
+   (page views,          (Event Logs)         (journald logs)
+    JS errors)                │                      │
+         │                    │                      │
+         ▼                    ▼                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    FASTAPI BACKEND                          │
+│  check key → parse logs → score danger → match threat feed  │
+│  → save everything → push live updates to browsers          │
+└──────┬───────────────────────────────┬──────────────────────┘
+       │                               │
+       ▼                               ▼
+  MongoDB (keeps              Elasticsearch (fast
+  everything, forever)         search; optional)
+       │                               │
+       └───────────────┬───────────────┘
+                       ▼
+              React dashboard (:5173)
 ```
 
-Every agent entry (heartbeat, lifecycle, security event) and every website event lands in **exactly one** per-source Mongo collection — `events_website` | `events_windows` | `events_linux` — **and** Elasticsearch. Lifecycle/heartbeat entries are no longer split into a separate collection: they are ordinary documents in the same per-source collection, distinguished by the `category` field (see *Data Model*). Live Events reads Mongo (unified, filterable by `source`, security events + website events only); the search box queries Elasticsearch. If Elasticsearch is down the pipeline degrades to Mongo-only — nothing is lost.
+1. **Collect** — agents and websites POST small JSON events to the backend.
+2. **Score** — every event gets a 0–100 risk score and a severity (critical / high / medium / low / info).
+3. **Watch** — the dashboard streams new events live; nothing refreshes manually.
+4. **Investigate** — suspicious activity becomes an *incident* with evidence, notes, and a mitigation checklist.
+5. **Close** — incidents are resolved with a written resolution note, so the record shows *why*.
+
+If Elasticsearch goes down, nothing breaks: the platform falls back to MongoDB automatically ("Degraded" badge) and catches up when search returns.
 
 ---
 
-## Key Features
+## Pages (user guide)
 
-- **Near-real-time ingestion** — agent watchers push batches every ~1 s; the dashboard streams events over WebSockets (`/ws/projects/{id}/live`).
-- **Per-source event storage** — `events_website`, `events_windows`, `events_linux` collections with `(project_id, timestamp)` indexes; the Events API merges them into one time-sorted feed with a `source` filter.
-- **Resilient degraded mode** — Elasticsearch outage or slowness never produces 500s or data loss; Mongo is the durable store, ES is the search accelerator.
-- **Persistent cursors, no duplicate spam** — Windows agent tracks `RecordId` in `cursor.json`; Linux agent tracks journal `__CURSOR` in `journal_cursor`; both flush to disk every ~1 s so restarts don't resend.
-- **Multi-tenant isolation** — every event, API key and agent is tied to a project; users only see their own data. Every project-scoped route resolves ownership through the `get_owned_project` dependency *before* any query runs, and the **Connected Sources** panel (Live Events) shows exactly which keys/agents are feeding the project so isolation is visible, not just assumed.
-- **Data Cleanup with preview-first deletion** — old security events and raw agent entries (heartbeat/lifecycle) can be removed per project, per source, per hostname, and per time cutoff, with two disjoint scopes: *Events* (security events + website docs) and *Raw agent logs* (heartbeat/lifecycle only). The delete endpoint is guarded by `expected_count` (409 if the data changed since the preview), stays in sync with Elasticsearch, and every executed cleanup is appended to a permanent `audit_log` collection (visible under *Cleanup History*) that the product can never delete — cleaning up security logs is itself audit-logged.
-- **Structured log normalization** — raw lines are parsed server-side into `summary`, `parsed` fields (user, source IP, action, event ID) and `severity`; the raw text is kept for forensics.
-- **Security-relevant gating** — only flagged Windows event IDs and Linux actions are promoted to `security_event` category (see *Severity & Risk Scoring*); everything still lands in the same per-source collection verbatim as `heartbeat` / `lifecycle` — nothing is lost.
-- **Threat intelligence** — source IPs come from the real connection (or parsed log lines), matched against a periodically refreshed known-malicious-IP feed and optionally GeoIP-enriched offline.
-- **Incident workspace** — convert events into incidents, attach evidence snapshots, track status.
-- **Website Setup page** — the complete IDE-agent integration prompt (interfaces, batching pseudocode, troubleshooting table) rendered verbatim with the project's real server URL + API key filled in, with copy/download and a key-generation shortcut.
-
----
-
-## Tech Stack
-
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| Frontend | React 18, Vite, TailwindCSS, Framer Motion, TanStack Query, Zustand | Dark-mode SOC dashboard (served via nginx) |
-| Backend | Python 3.12, FastAPI, Uvicorn, PyJWT | REST + WebSocket API, schema docs at `/docs` |
-| Database | MongoDB 7 (pymongo) | Users, projects, keys, agents, events, incidents |
-| Search | Elasticsearch 8.17 | High-throughput full-text log search |
-| Agents | PowerShell 5.1+, Bash + journald, JavaScript | Lightweight native log shippers |
-
----
-
-## Prerequisites
-
-- **Docker Desktop** (primary path), or
-- Python 3.10+, Node.js 18+ (manual path below)
+| Page | What it's for |
+| :--- | :--- |
+| **Workspace** | Your projects. One project per thing you monitor (a website, an office PC fleet, a server). Create, open, delete. |
+| **Overview** | At-a-glance health: event volume chart, live activity, agent status dots (green < 2 min, amber < 10 min, red = stale), severity breakdown, recent incidents. |
+| **Live Events** | The main feed. Search, severity pills, host chip, and a **stream dropdown**: *security feed* (default), *security only*, *heartbeats*, *raw agent logs*. Click any row for full details + one-click incident creation. The **Live/Disconnected** badge is the browser's live-update socket, not agent health. |
+| **Threat Intel** | Bigger picture per time window (24h/7d/30d): threat-feed status, attack timeline (click a bar to see that bucket's events), MITRE ATT&CK tactic matrix, attack narratives (linked event chains), a **correlation graph** (IPs → hosts → users → techniques → incidents), top risk hosts, known threat IPs, geo breakdown, IOC allowlist, and inline event triage. Clicking a feed, host, or technique filters every panel. |
+| **Incidents** | Your case queue. Filter by status/severity/assignee/technique/tag, sort by urgency or age, bulk-assign and bulk-change status, export PDF (single or zip). |
+| **Incident Detail** | One case: editable title (auto-generated from context when blank, e.g. "Brute Force on SHUBHAM"), severity/status, linked hosts/IPs/users/techniques that jump into Threat Intel, evidence timeline (single events or whole attack chains), mitigation checklist with technique-based suggestions, threaded notes, related incidents, and a full activity log. Closing requires a resolution note. |
+| **API Keys** | Two key types: **website keys** (browser ingest, rate-limited) and **agent keys** (one machine per key). Keys are shown **once** at creation — store them immediately. Revoke is instant and permanent. |
+| **Integrations** | Connection instructions per project: the **AI agent prompt** for websites (paste into Cursor/Claude Code — it writes real telemetry code, never a script tag) and one-line installers for Windows/Linux agents. |
+| **Data Cleanup** | Delete old events or raw agent logs past a cutoff. Preview always runs first and the delete button stays locked until it matches; type `DELETE` to arm. Mismatched previews are rejected (409) and every cleanup lands in an undeletable **Cleanup History**. |
+| **Settings** | Edit display name, change password, see workspace stats, sign out. |
+| **Help** | Searchable in-app guide with quick-start steps and troubleshooting. |
 
 ---
 
@@ -87,308 +69,189 @@ docker compose up -d --build
 
 | Service | URL |
 | :--- | :--- |
-| Dashboard (nginx) | http://localhost:5173 |
+| Dashboard | http://localhost:5173 |
 | API + Swagger UI | http://localhost:8000/docs |
 | Mongo | localhost:27017 |
 | Elasticsearch | localhost:9200 |
 
-The compose stack wires `MONGO_URL`, `ELASTICSEARCH_HOSTS`, `SECRET_KEY`, `CORS_ORIGINS`, and mounts `backend/data` into the backend (for GeoLite2 `.mmdb`). Environment overrides live in a root `.env` / `backend/.env` — see `.env.example`.
-
-Rebuild after backend changes:
-
-```bash
-docker compose up -d --build backend
-```
+Rebuild after backend changes: `docker compose up -d --build backend`
 
 ### Option B — Local manual run
 
 ```bash
-# Terminal 1 — backend
-pip install -r backend/requirements.txt
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload   # from backend/
+# Terminal 1 — backend (from backend/)
+pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Terminal 2 — frontend
-cd frontend && npm install && npm run dev                            # :5173
+cd frontend && npm install && npm run dev   # :5173
 ```
 
-### Default credentials
+### Environment
 
-A fresh database is seeded with:
-
-- **Email**: `admin@soc.local`
-- **Password**: `admin`
-
-(Seeded by `scripts/reset_dev.py`. You can also click **Register** at `/register`.)
+Root `.env.example` documents every variable (SECRET_KEY, MONGO_URL, ELASTICSEARCH_HOSTS, CORS_ORIGINS, PUBLIC_BACKEND_URL, GEOIP_DB_PATH, THREAT_FEED_URL/REFRESH_HOURS). Compose ships working dev defaults; set a real `SECRET_KEY` before exposing the server beyond localhost (the backend logs a warning otherwise).
 
 ---
 
-## Data Model
+## Connecting sources
 
-MongoDB database `soc_platform`:
+### Websites — AI telemetry prompt (recommended)
 
-| Collection | Purpose |
-| :--- | :--- |
-| `users` | Analysts; `email` unique, `hashed_password` (bcrypt) |
-| `projects` | Tenant containers; owner, name, snippet embed, api_base |
-| `api_keys` | `sak_…` website keys with `project_id`, `created_by`, `revoked` |
-| `agent_keys` | Registered agents: id, label, project_id, os_type, status, last_seen |
-| `events_website` | **All** website-sourced events (page views, JS errors, rejections) |
-| `events_windows` | **All** Windows agent entries — lifecycle, heartbeat AND security events (`category` distinguishes them) |
-| `events_linux` | **All** Linux agent entries — lifecycle, heartbeat AND security events (`category` distinguishes them) |
-| `incidents` | Incidents + `incident_evidence` snapshots |
-| `counters` | Auto-increment sequences (`get_next_id`), one row per collection |
-| `audit_log` | Immutable, product-undeletable record of every executed cleanup |
+On the Integrations page, copy the **AI agent prompt** and paste it into an IDE agent. It adds a small `soc-monitor`-style module to the site that sends `page_view` and `js_error` events to `POST /ingest/event` with an `X-API-Key` header. The key alone identifies the project — no project ID is sent — and the module fails silently so a dead SOC never breaks the site.
 
-These are the **only three log-bearing collections** — the former unified `events` and `agent_logs` collections are retired (dropped; nothing writes to them, no code references them). Every agent entry is one document in its per-source collection; the `category` field decides which view it belongs to.
-
-Indexes: `email` unique on users; `(project_id, timestamp)` on each `events_*` collection; `agent_id` on `events_windows` / `events_linux`.
-
-### Canonical document shapes
-
-**`events_website`** — one document per website-sourced event (no `category` — not needed):
-
-```jsonc
-{
-  "id": "evt_3fa85f64…",            // string
-  "project_id": 2,
-  "source": "website",
-  "event_type": "page_view" | "js_error" | "unhandled_rejection",
-  "session_id": "…",
-  "raw": { "url": "…", "referrer": "…", "user_agent": "…", "message"?: "…", "stack"?: "…", "line"?: 12, "column"?: 3 },
-  "enriched": { "ip": "…", "geo"?: { "country": "…", "city": "…", "lat": 0, "lon": 0 }, "threat_match"?: true, "risk_score": 0 },
-  "tags": ["website"],
-  "timestamp": "2026-08-09T12:00:00.123+00:00"   // ISO 8601 UTC, tz-aware
-}
-```
-
-**`events_windows`** — one document per Windows agent entry **and** per promoted security event (lifecycle, heartbeat AND security):
-
-```jsonc
-{
-  "id": "agent_3fa85f64…",          // string (uuid)
-  "project_id": 2,
-  "agent_id": 2,
-  "hostname": "DESKTOP-2MFRDIN",
-  "source": "windows",
-  "category": "lifecycle" | "heartbeat" | "security_event",
-  "event_type": "critical" | "high" | "medium" | "low" | "info",   // severity
-  "summary": "Failed logon for attacker from 203.0.113.7",          // human-readable one-liner
-  "parsed": { "event_id"?: "4625", "provider"?: "Microsoft-Windows-Security-Auditing", "level"?: "Information", "log_name"?: "Security", "action"?: "failed_logon", "user"?: "…", "ip"?: "…" },
-  "raw": { "log_name"?: "Security", "event_id"?: "4625", "record_id"?: "1814", "provider"?: "…", "message": "…", "level"?: "info", "stage"?: "event_log", "agent_id": 2, "hostname": "…", "trace_id": "…", "time_created"?: "…" },
-  "enriched": { "ip"?: "…", "geo"?: {…}, "threat_match"?: true, "risk_score": 0 },
-  "timestamp": "2026-08-09T12:00:00.123+00:00"
-}
-```
-
-**`events_linux`** — mirrors `events_windows`, Linux-specific parsed/raw fields:
-
-```jsonc
-{
-  "id": "agent_3fa85f64…",
-  "project_id": 2,
-  "agent_id": 1,
-  "hostname": "web-01",
-  "source": "linux",
-  "category": "lifecycle" | "heartbeat" | "security_event",
-  "event_type": "critical" | "high" | "medium" | "low" | "info",   // severity
-  "summary": "Failed login for root from 198.51.100.9",
-  "parsed": { "service"?: "sshd", "process"?: "sshd", "pid"?: 1234, "severity"?: "medium", "action"?: "failed_login", "user"?: "root", "ip"?: "198.51.100.9" },
-  "raw": { "time"?: "…", "host"?: "…", "process"?: "…", "pid"?: "…", "service"?: "sshd", "severity"?: "3", "message": "Failed password for root from 198.51.100.9 port 22 ssh2", "level"?: "err", "stage"?: "event_log", "agent_id": 1, "hostname": "web-01", "trace_id": "…" },
-  "enriched": { "ip"?: "…", "geo"?: {…}, "threat_match"?: true, "risk_score": 0 },
-  "timestamp": "2026-08-09T12:00:00.123+00:00"
-}
-```
-
-The `stage` values the agents send (`heartbeat`, `event_log`, `activity`, `install_complete`, `enroll_done`, `config_saved`, …) are mapped to `category` on ingest: `heartbeat` stays `heartbeat`; entries promoted by the security allow-list become `security_event`; **everything else — including install lifecycle noise — becomes `lifecycle`**. Nothing is dropped; the original `stage`/`level` are preserved under `raw`.
-
-### Events API rules
-
-- `GET /projects/{id}/events?source=windows` → queries only `events_windows` (fast, index-backed).
-- `source=all` (default) → Python-merged union of all three collections, sorted by `(timestamp, id)` desc; `offset`/`size` applied after merge, `total` = sum of collection counts.
-- The **Events surface shows only curated rows**: website documents plus agent documents with `category = security_event`. Heartbeat/lifecycle raw agent entries are excluded — they are browsed through `GET /agents/logs` and the *Raw agent logs* cleanup tab instead.
-- `source` values outside `website|windows|linux|all` → `400`.
-
-### Agent Logs (`GET /agents/logs`)
-
-Lists **every** entry for the user's agents from `events_windows` + `events_linux` merged, newest first — **all categories** (heartbeat, lifecycle, security_event) are returned, and the `category` field lets the client filter client-side. The curated security-event surface is served by the Events API, so the two views never overlap.
-
----
-
-## Agent Deployment
-
-API keys come from **Settings → API Keys** (or `POST /projects/{id}/api-keys`). Set the key's OS type — it determines the events collection the agent's data lands in.
-
-### 1. Website snippet (`usp.js`)
-
-```html
-<script src="http://localhost:8000/agents/usp.js" data-soc-key="YOUR_API_KEY" data-soc-host="http://localhost:8000"></script>
-```
-
-Tracks page views, sessions and console errors via `POST /ingest/event` / `/ingest/{project_id}/event` → `events_website`.
-
-### 2. Windows agent (PowerShell)
+### Windows — PowerShell (run as Administrator)
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& { irm http://localhost:8000/install.ps1 -OutFile $env:TEMP\soc-install.ps1; & $env:TEMP\soc-install.ps1 -ApiKey YOUR_AGENT_KEY -ApiBase http://localhost:8000; Remove-Item $env:TEMP\soc-install.ps1 }"
 ```
 
-Installs a background task streaming Security/Application/System logs; `RecordId` cursor persisted to `cursor.json` → `events_windows`.
+Installs a scheduled task tailing Security/Application/System logs with a `RecordId` cursor (`cursor.json`), so restarts never resend. One machine per key — a second box needs its own key.
 
-### 3. Linux agent (Bash / systemd)
+### Linux — shell (systemd or cron fallback)
 
 ```bash
 curl -sfL http://localhost:8000/install.sh | bash -s -- --api-key "YOUR_AGENT_KEY" --api-base "http://localhost:8000"
 ```
 
-Installs `soc-agent.service` running `journal_watcher.py`, which tails `journalctl` (`-o json`), records the last `__CURSOR` in `/etc/soc-agent/journal_cursor`, and POSTs batches to `/agents/logs/bulk` every ~1 s (re-queuing on failure) → `events_linux`.
+Runs `journal_watcher.py`, tails `journalctl -o json`, persists the journal cursor, POSTs batches to `/agents/logs/bulk` roughly every second (re-queues on failure).
+
+### What counts as an "event worth seeing"
+
+Agents ship *everything* (heartbeats, routine lines, real attacks) but only security-relevant entries are promoted to the security feed:
+
+- **Windows** (by log + event ID): 4625 failed logon → high, 1102/104 log cleared → critical/high, 4724 password reset → high, 7045 new service → medium, 4624 logon → medium, and more (`ALLOWED_WINDOWS_EVENTS` in `services/event_filter.py`).
+- **Linux** (by parsed action): `account_added` → high, `failed_login` → medium, `successful_login` / `sudo_command` / `process_exec` → info.
+- **Websites**: a ~40-rule engine scores SQLi (80), XSS (80), SSRF (90), IDOR+redirect (60), command injection, open redirect, and more; benign traffic scores 0.
+
+Everything else stays queryable as `heartbeat` / `lifecycle` (Live Events → *raw agent logs*). Nothing is ever dropped.
+
+### Risk scores (0–100)
+
+- Agent events start from severity: critical 90, high 70, medium 40, low 15, info 0.
+- Website detections use their rule score directly (SSRF 90, SQLi/XSS 80, …).
+- **+30** if the source IP is on the known-malicious feed.
+- **Burst bonus**: 3+ auth failures from one IP/user in 10 min → +20; 5+ → +40 (capped at 100).
 
 ---
 
-## Severity & Risk Scoring
+## Data model
 
-**Severity** (`event_type`) is a security assessment, not a passthrough of the OS's own level label:
+MongoDB database `soc_platform`. Every agent entry and website event lands in exactly one per-source collection, distinguished by `category` (`security_event` | `heartbeat` | `lifecycle`; website docs carry no category):
 
-- Windows allow-list (`ALLOWED_WINDOWS_EVENTS`, in `services/event_filter.py`): e.g. 4625 failed logon → `high`, 1102 audit-log-cleared → `critical`, 104 event-log-cleared → `high`, 4724 password reset → `high`, 7045 new service → `medium`, 4624 logon → `medium`, 4634 logoff → `info`.
-- Linux allow-list (`ALLOWED_LINUX_ACTIONS`): `account_added` → `high`, `failed_login` → `medium`, `successful_login`/`sudo_command`/`process_exec` → `info`. (`process_exec` entries come from auditd execve records — every command run in a real user session; daemon/cron spawns with `auid=-1` are skipped at the agent.)
+| Collection | Purpose |
+| :--- | :--- |
+| `users` | Analysts; unique email, bcrypt password |
+| `projects` | Tenant containers; every row of every other collection ties back to one |
+| `api_keys` | Website keys (`soc_…`, hashed, one-time reveal) |
+| `agent_keys` | Agent keys (`sak_…` prefix shown once), enrollment binding, heartbeat |
+| `events_website` | All website events (page views, JS errors) |
+| `events_windows` | All Windows entries — lifecycle, heartbeat AND security events |
+| `events_linux` | All Linux entries — lifecycle, heartbeat AND security events |
+| `incidents` | Cases (status, severity, tags, assignee, mitigation, notes, resolution) |
+| `incident_evidence` | Attached event snapshots with source (`live_events`/`correlated_chain`) |
+| `threat_indicators` | Per-project manual indicators |
+| `threat_suppressions` | Per-project false-positive suppressions |
+| `threat_feed_cache` | Downloaded feed snapshot (survives restarts) |
+| `ioc_allowlist` | Per-project known-good infrastructure (never flags) |
+| `audit_log` | Immutable trail of cleanups + incident activity — the product cannot delete it |
+| `counters` | Auto-increment ID sequences |
 
-**Risk score** (`services/risk_engine.py`) starts from the severity base (`critical` 90, `high` 70, `medium` 40, `low` 15, `info` 0) and adds:
-
-- **+30** if the source IP matches the known-malicious feed (`enriched.threat_match`).
-- **Burst correlation**: 3+ auth-failure events from the same IP/user within 10 min → +20; 5+ → +40 (cap 100). Queries run across all three `events_*` collections.
-
-**Gating**: only allow-listed entries are promoted to `category = security_event` (and thereby the Events surface/ES/Live Events); everything else stays in the same per-source collection with `category = lifecycle` or `heartbeat` — nothing is lost.
-
----
-
-## Threat Intelligence & Enrichment
-
-### Real source-IP capture
-
-`enriched.ip` is never client-claimed: website events take `X-Forwarded-For` (first value, when behind a proxy) else the socket peer; agent events take the parsed source IP from the log line.
-
-### Known-malicious IP feed
-
-`services/threat_feed.py` keeps an in-memory set of known-bad IPs, refreshed every 6 h by default from abuse.ch Feodo Tracker (free, no key; also tolerates CSV feeds like the SSL Blacklist). Matches set `enriched.threat_match: true` (+30 risk) and surface on the Threat Intelligence page.
-
-```env
-THREAT_FEED_URL=https://feodotracker.abuse.ch/downloads/ipblocklist.txt
-THREAT_FEED_REFRESH_HOURS=6
-```
-
-Test path (backend shell): `from app.services.threat_feed import add_ip; add_ip("203.0.113.7")`.
-
-### Offline GeoIP (optional)
-
-Drop `GeoLite2-City.mmdb` into `backend/data/` (mounted at `/app/data` in Docker, `GEOIP_DB_PATH` already set) or set `GEOIP_DB_PATH` yourself. Events then carry `enriched.geo` and the Geo Breakdown chart populates. Private/reserved/invalid IPs are skipped silently.
+Indexes cover login email, `(project_id, timestamp)` on every `events_*` collection, agent/project/evidence lookups, and the allowlist.
 
 ---
 
-## Project Structure
+## Key API endpoints
+
+Interactive docs at `http://localhost:8000/docs`. All project routes enforce ownership first; agent tokens never work as user tokens and vice versa.
+
+| Area | Endpoints |
+| :--- | :--- |
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET/PATCH /auth/me`, `POST /auth/change-password` |
+| Projects | `GET/POST /projects`, `GET /projects/{id}`, `POST /projects/{id}/select`, `DELETE /projects/{id}`, `GET /projects/{id}/sources` |
+| Website keys | `POST/GET /projects/{id}/api-keys`, `DELETE /api-keys/{id}` (revoke) |
+| Agent keys | `POST/GET /agents/keys`, `DELETE /agents/keys/{id}` (revoke), `DELETE /agents/keys` (all mine), `GET /agents/status` |
+| Ingest | `POST /ingest/event`, `POST /agents/enroll`, `POST /agents/logs`, `POST /agents/logs/bulk` |
+| Events | `GET /projects/{id}/events` (`source`, `category`, `severity`, `host`, `query`), `GET /events/{id}` |
+| Threat intel | `.../threat-intel/{tactics,timeline,top-hosts,known-ips,geo,graph,narratives,flagged}`, `.../threat/{indicators,correlation,matches,refresh}`, triage `PATCH .../threat-intel/events/{id}/triage`, allowlist CRUD, bucket drill-down, match feedback |
+| Incidents | `GET/POST /projects/{id}/incidents` (filters + sort), `GET/PATCH /incidents/{id}`, `POST /incidents/{id}/resolve`, `GET /incidents/{id}/related`, `POST /projects/{id}/incidents/bulk`, notes, evidence (+chain), mitigation (+suggestions), activity, PDF export |
+| Cleanup | preview + delete for `events` and `agent-logs` (with `expected_count` guard), `GET /projects/{id}/cleanup-history` |
+| Integrations | `GET /projects/{id}/integration-snippet`, `GET /projects/{id}/website-setup-prompt`, `GET /agents/usp.js`, `/install.sh`, `/install.ps1` |
+| Live | `WS /ws/projects/{id}/live` (user JWT via `?token=`), `GET /health` |
+
+---
+
+## Project structure
 
 ```text
 .
 ├── agents/                       # Agent installers + Linux watcher
-│   ├── install.sh                # Linux agent installer (systemd)
-│   ├── install.ps1               # Windows agent installer
-│   └── journal_watcher.py        # Linux journald watcher (cursor, bulk POST)
+│   ├── install.sh                # Linux installer (systemd/cron)
+│   ├── install.ps1               # Windows installer (scheduled task)
+│   └── journal_watcher.py        # journald tailer (cursor, bulk POST, requeue)
 ├── backend/
 │   ├── app/
-│   │   ├── main.py               # FastAPI app, /docs redirect, typed /health
+│   │   ├── main.py               # FastAPI app, lifespan, safe 500 handler
 │   │   ├── config.py             # Env-driven configuration
-│   │   ├── auth.py               # JWT + bcrypt helpers
-│   │   ├── database.py           # Mongo client, events_* helpers, indexes
-│   │   ├── ws_manager.py         # WebSocket connection manager
-│   │   ├── static/usp.js         # Website tracking snippet
-│   │   ├── models/               # Pydantic schemas
+│   │   ├── auth.py               # JWT (user vs agent scopes), bcrypt, cookies
+│   │   ├── database.py           # Mongo client, collection helpers, indexes
+│   │   ├── dependencies.py       # Ownership guards (project/incident)
+│   │   ├── ws_manager.py         # WebSocket fan-out per project
+│   │   ├── static/usp.js         # Legacy browser snippet artifact
+│   │   ├── models/               # Pydantic schemas (user, project, keys, incident, …)
 │   │   ├── routers/              # auth, projects, api_keys, agents, ingest,
-│   │   │                         # events, incidents, ws, overview, threat
+│   │   │                         # events, incidents, threat, overview, ws
 │   │   └── services/
-│   │       ├── elastic.py        # ES client wrapper (graceful degradation)
-│   │       ├── log_parser.py     # Raw log → normalized parsed/summary
+│   │       ├── rules.py          # Website attack-detection engine (~40 rules)
 │   │       ├── event_filter.py   # Security-relevance gating + severity tables
-│   │       ├── prompt_templates.py # Website integration prompts (single source)
-│   │       ├── severity.py       # classify_severity fallback helpers
-│   │       ├── risk_engine.py    # Burst + threat-match risk scoring
-│   │       ├── threat_feed.py    # Known-malicious IP feed loop
-│   │       └── geoip.py          # Offline MaxMind lookups
-│   ├── data/                     # Mounted into container (GeoLite2 .mmdb here)
-│   ├── Dockerfile
+│   │       ├── log_parser.py     # Raw log → summary/parsed fields
+│   │       ├── risk_engine.py    # Base + threat-match + burst scoring
+│   │       ├── mitre.py          # ATT&CK tactic/technique mapping
+│   │       ├── threat_feed.py    # Multi-feed malicious-IP loop (4 feeds)
+│   │       ├── geoip.py          # Offline MaxMind lookups (optional DB)
+│   │       ├── incident_metrics.py # Evidence-derived hosts/IPs/users/techniques
+│   │       ├── prompt_templates.py # Integration prompts (single source of truth)
+│   │       ├── pdf_report.py     # Incident PDF renderer
+│   │       ├── audit.py          # Cleanup + incident activity trail
+│   │       └── elastic.py        # ES client with Mongo fallback
+│   ├── data/                     # Mounted volume (GeoLite2 .mmdb goes here)
+│   ├── Dockerfile                # python:3.12-slim
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx               # Router + layout
-│   │   ├── pages/                # Overview, LiveEvents, ThreatIntel, Incidents,
-│   │   │                         # IncidentDetail, WebsiteSetup, Explore,
-│   │   │                         # Workspace, APIKeys, Integrations, Settings,
-│   │   │                         # Help, Login, Register
-│   │   ├── components/           # Reusable UI (tables, modals, charts)
-│   │   ├── hooks/                # useWebSocket
-│   │   ├── lib/                  # API client, time formatting
-│   │   └── stores/               # Zustand (authStore, projectStore)
+│   │   ├── App.jsx               # Routes (all project pages gated on selection)
+│   │   ├── pages/                # Workspace, Overview, LiveEvents, ThreatIntel,
+│   │   │                         # Incidents, IncidentDetail, APIKeys, Integrations,
+│   │   │                         # DataCleanup, Settings, Help, Login, Register, Explore
+│   │   ├── components/           # Modals, layout (sidebar/topbar), UI bits
+│   │   ├── hooks/                # useWebSocket (socket + HTTP-poll fallback)
+│   │   ├── lib/                  # API client, time formatting, query client
+│   │   └── stores/               # Zustand (auth, project, toasts)
 │   ├── nginx.conf
 │   └── Dockerfile
-├── scripts/                      # Maintenance utilities (repo root)
-│   ├── reset_dev.py              # Drop + reseed dev data (admin user, projects)
-│   └── fix_db.py                 # Legacy-schema repair (password → hashed_password)
-├── docker-compose.yml            # mongo + elasticsearch + backend + frontend
-├── .env.example                  # Environment reference (backend/.env for local)
-└── .dockerignore / .gitignore
+├── docker-compose.yml            # mongo 7 + elasticsearch 8.17 + backend + frontend
+├── .env.example                  # All environment variables documented
+└── README.md
 ```
 
 ---
 
-## REST API Summary
+## Threat intelligence details
 
-Full interactive docs: **http://localhost:8000/docs** (`GET /` redirects there).
-
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/auth/register` | Create analyst account |
-| `POST` | `/auth/login` | Login → JWT |
-| `GET` | `/health` | Typed health: mongo + elasticsearch status |
-| `GET/POST` | `/projects` | List / create projects |
-| `GET` | `/projects/{id}` | Project detail + snippet |
-| `GET` | `/projects/{id}/sources` | Connected Sources: every API key + agent key feeding this project (owned-project scoped) |
-| `GET` | `/projects/{id}/integration-snippet` | Script tag + short AI-agent prompt |
-| `GET` | `/projects/{id}/website-setup-prompt` | Full filled-in Website Setup prompt (`X-API-Key` header; 409 until a key exists) |
-| `DELETE` | `/projects/{id}` | Delete project (cascades events + keys + agents; never touches `audit_log`) |
-| `POST` | `/projects/{id}/api-keys` | Create project API key |
-| `DELETE` | `/api-keys/{key_id}` | Revoke a key |
-| `GET` | `/projects/{id}/events?source=all\|website\|windows\|linux` | Event feed (merged + time-sorted) |
-| `POST` | `/projects/{id}/events/cleanup/preview` | Read-only preview of a cleanup: `{source, hostname?, before}` → `{count, sample (≤20), oldest_match, newest_match}` |
-| `DELETE` | `/projects/{id}/events/cleanup` | Execute cleanup (same body + `expected_count`); 409 if the count drifted; deletes Mongo + ES; writes `audit_log` |
-| `POST` | `/projects/{id}/agent-logs/cleanup/preview` | Read-only preview for raw agent entries — heartbeat/lifecycle docs in `events_windows`/`events_linux` (same contract, disjoint from the security-event cleanup) |
-| `DELETE` | `/projects/{id}/agent-logs/cleanup` | Execute raw agent-entry cleanup (heartbeat/lifecycle only; same `expected_count` guard + audit) |
-| `GET` | `/projects/{id}/cleanup-history` | Permanent cleanup audit trail (user, filters, count, when) — read-only, never cleanable |
-| `GET` | `/projects/{id}/events/{event_id}` | Single event by id (owner-only) |
-| `GET` | `/projects/{id}/threat-intel/flagged` | Known-bad indicator matches |
-| `GET` | `/projects/{id}/overview` | Stats + time-series aggregates |
-| `GET/POST` | `/projects/{id}/incidents` | List / create incidents |
-| `PATCH` | `/projects/{id}/incidents/{incident_id}` | Update status/severity/notes |
-| `POST` | `/projects/{id}/incidents/{incident_id}/evidence` | Attach evidence |
-| `POST` | `/ingest/event` · `/ingest/{project_id}/event` | Website/event ingestion (API key) |
-| `POST` | `/agents/enroll` | Register a new agent (API key) |
-| `POST` | `/agents/logs` · `/agents/logs/bulk` | Single / batched agent log ingestion |
-| `GET` | `/agents/logs` | Raw agent entry list (heartbeat + lifecycle + security_event, all categories, filterable by `category`) |
-| `GET` | `/agents` · `/agents/{agent_id}/status` | Agent list / status |
-| `DELETE` | `/agents/keys/{key_id}` | Delete an agent key |
-| `WS` | `/ws/projects/{id}/live` | Live WebSocket event stream |
-| `GET` | `/agents/usp.js` · `/install.sh` · `/install.ps1` | Agent artifacts |
+- **Feed**: four public blocklists (Feodo Tracker, URLhaus, Spamhaus DROP, Tor exits), refreshed every 6 h into memory + `threat_feed_cache`. Hits set `enriched.threat_match` (+30 risk) and surface under flagged/matches/known-IPs.
+- **Enrichment**: offline GeoIP via local `GeoLite2-City.mmdb` (optional; sections say so honestly when absent). No per-request external calls.
+- **Allowlist vs suppression**: `ioc_allowlist` = known-good infra, never flags. Match feedback = per-project false-positive suppression. Different tools, both respected everywhere.
+- **Event triage**: any matched event carries status (`new` → `false_positive`), severity override (or `auto` = risk bucket), assignee, and analyst notes — editable inline.
+- **Correlation graph**: derived per window from real edges (ip→host→user→event type→technique→incident), capped at top nodes with a truncation notice, cached briefly.
 
 ---
 
-## Troubleshooting & Resetting
+## Troubleshooting
 
-- **Reset the dev database** (drops Mongo collections + ES index, reseeds admin user and demo projects):
-  ```bash
-  docker compose exec backend python -m scripts.reset_dev --yes
-  ```
-  (Repo-root `scripts/` is baked into the backend image; for local runs: `cd backend && python -m scripts.reset_dev --yes`.)
-- **Legacy DB repair** (old rows stored `password` instead of `hashed_password`): `python -m scripts.fix_db`.
-- **Backend is unhealthy** — check `docker compose ps`, then `docker compose logs backend`; ES health `GET localhost:9200/_cluster/health` (yellow = normal for a single node).
-- **Port conflicts** — API needs 8000, dashboard 5173, Mongo 27017, ES 9200.
-- **Mongo inspection**:
-  ```powershell
-  Get-Content check.js | docker exec -i soc-dashboard-main-mongo-1 mongosh --quiet soc_platform
-  ```
+- **No events arriving?** Key must belong to the selected project; SOC URL reachable from the source; HTTPS page → HTTPS SOC (mixed-content blocks silently).
+- **401/403 from ingest?** Wrong, revoked, or cross-project key — generate a fresh one under API Keys.
+- **Agent dot red?** No heartbeat for 10+ min — check the scheduled task / timer on that machine. (The dot is liveness; the Live/Disconnected badge in Live Events is your *browser's* update socket — if it sticks, log out/in once.)
+- **"Degraded" health?** Elasticsearch is down; Mongo fallback is active. Nothing is lost.
+- **Cleanup "Nothing matches"?** All data is newer than the cutoff, or you're in the wrong project. A 409 after preview just means data moved — re-preview and confirm again.
+- **Port conflicts** — API 8000, dashboard 5173, Mongo 27017, ES 9200.
+- **Mongo inspection** — `mongosh soc_platform --quiet --eval "db.getCollectionNames().forEach(c => print(c + ': ' + db[c].countDocuments({})))"`.
 - **Full teardown** (wipes volumes): `docker compose down -v`.

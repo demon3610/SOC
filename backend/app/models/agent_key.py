@@ -3,7 +3,7 @@ import hashlib
 import secrets
 from typing import Optional
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 def generate_key_prefix() -> str:
@@ -19,8 +19,8 @@ def generate_raw_key() -> str:
 
 
 class AgentKeyCreate(BaseModel):
-    label: str
-    project_id: Optional[int] = None
+    label: str = Field(min_length=1, max_length=100)
+    project_id: int
 
 
 class AgentKeyResponse(BaseModel):

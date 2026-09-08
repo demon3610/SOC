@@ -35,6 +35,12 @@ class HealthResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not os.getenv("SECRET_KEY"):
+        logger.warning(
+            "SECRET_KEY is unset — running with the built-in default, which is "
+            "public knowledge. Set a strong SECRET_KEY before exposing this "
+            "server beyond localhost; all user and agent JWTs depend on it."
+        )
     ensure_indexes()
     try:
         ensure_index()
@@ -119,7 +125,9 @@ async def global_exception_handler(request, exc: Exception):
     headers = None
     if request.url.path.startswith("/ingest"):
         headers = {"Access-Control-Allow-Origin": "*"}
-    return JSONResponse(status_code=500, content={"detail": str(exc)}, headers=headers)
+    # Never leak internals (paths, query internals, driver errors) to clients;
+    # the full traceback is in the server log above.
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"}, headers=headers)
 
 
 @app.get("/", include_in_schema=False)

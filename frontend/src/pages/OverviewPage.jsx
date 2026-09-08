@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { BarChart2, Zap, Monitor, PieChart as PieChartIcon, ShieldAlert } from 'lucide-react';
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../lib/api';
 import { useProjectStore } from '../stores/projectStore';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { formatLocalTime, formatChartBucket } from '../lib/time';
+import { formatLocalTime, formatChartBucket, toDate } from '../lib/time';
 import { CreateIncidentModal } from '../components/CreateIncidentModal';
 import { PageHeader } from '../components/ui/PageHeader';
 
@@ -27,10 +28,12 @@ function AgentDot({ lastSeenAt }) {
     const id = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(id);
   }, []);
-  if (!lastSeenAt) {
+  // Shared UTC-assuming parser (same as every formatted time on the page).
+  const seen = toDate(lastSeenAt);
+  if (!seen) {
     return <span className="w-2 h-2 rounded-full bg-soc-muted" title="Never seen" />;
   }
-  const elapsedMin = (now - new Date(lastSeenAt).getTime()) / 60000;
+  const elapsedMin = (now - seen.getTime()) / 60000;
   const cls = elapsedMin < 2 ? 'bg-soc-sage' : elapsedMin < 10 ? 'bg-amber-500' : 'bg-red-500';
   return <span className={`w-2 h-2 rounded-full ${cls}`} title={`Last seen ${Math.round(elapsedMin)}m ago`} />;
 }
@@ -173,7 +176,7 @@ export function OverviewPage() {
             </ResponsiveContainer>
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-soc-muted">
-              <span className="text-4xl mb-2">📊</span>
+              <BarChart2 size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
               <p className="text-sm">No event data in this range</p>
             </div>
           )}
@@ -192,7 +195,7 @@ export function OverviewPage() {
               liveEvents.map((ev, i) => <MiniFeedItem key={ev.id || i} event={ev} />)
             ) : (
               <div className="flex flex-col items-center justify-center py-12 text-soc-muted">
-                <span className="text-3xl mb-2">⚡</span>
+                <Zap size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
                 <p className="text-xs">Waiting for live events…</p>
               </div>
             )}
@@ -229,7 +232,7 @@ export function OverviewPage() {
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-10 text-soc-muted">
-              <span className="text-3xl mb-2">🖥️</span>
+              <Monitor size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
               <p className="text-xs">No agents enrolled</p>
               <button onClick={() => navigate(`/integrations`)} className="text-xs text-soc-accent mt-2 hover:underline">
                 Install an agent →
@@ -259,7 +262,7 @@ export function OverviewPage() {
             if (sevData.length === 0) {
               return (
                 <div className="flex flex-col items-center justify-center py-10 text-soc-muted">
-                  <span className="text-3xl mb-2">🍩</span>
+                  <PieChartIcon size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
                   <p className="text-xs">No severity data in this range</p>
                 </div>
               );
@@ -339,7 +342,7 @@ function IncidentList({ pid }) {
   if (!incidents || incidents.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-10 text-soc-muted">
-        <span className="text-3xl mb-2">🛡️</span>
+        <ShieldAlert size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
         <p className="text-xs">No incidents reported</p>
       </div>
     );

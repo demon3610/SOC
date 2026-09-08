@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Globe, Monitor, Check } from 'lucide-react';
 import { api, saveWebsiteKey } from '../../lib/api';
+import { useToastStore } from '../../stores/toastStore';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 export function NewProjectModal({ onClose, onCreated }) {
   const [step, setStep] = useState(1);
@@ -16,6 +18,12 @@ export function NewProjectModal({ onClose, onCreated }) {
   const [aiAgentPrompt, setAiAgentPrompt] = useState('');
   const [snippetTab, setSnippetTab] = useState('script');
   const [loading, setLoading] = useState(false);
+  const addToast = useToastStore((s) => s.addToast);
+  const [, copy] = useCopyToClipboard();
+
+  const copyText = async (text) => {
+    if (!(await copy(text))) addToast('Copy failed — select the text manually', 'error');
+  };
 
   const createKey = async (p) => {
     if (type === 'system') {
@@ -34,14 +42,18 @@ export function NewProjectModal({ onClose, onCreated }) {
   };
 
   const handleCreate = async () => {
+    if (!name.trim()) {
+      addToast('Project name must not be empty', 'error');
+      return;
+    }
     setLoading(true);
     try {
-      const p = await api.projects.create({ name, type, description });
+      const p = await api.projects.create({ name: name.trim(), type, description });
       applyKeyResult(await createKey(p));
       setProject(p);
       setStep(2);
     } catch (e) {
-      alert(e.message);
+      addToast(e.message || 'Failed to create project', 'error');
     }
     setLoading(false);
   };
@@ -56,7 +68,7 @@ export function NewProjectModal({ onClose, onCreated }) {
     try {
       applyKeyResult(await createKey(project));
     } catch (e) {
-      alert(e.message);
+      addToast(e.message || 'Failed to regenerate key', 'error');
     }
     setLoading(false);
   };
@@ -154,7 +166,7 @@ export function NewProjectModal({ onClose, onCreated }) {
               <button onClick={onClose} className="text-sm text-soc-muted hover:text-soc-accent">Cancel</button>
               <button
                 onClick={handleCreate}
-                disabled={!name || loading}
+                disabled={!name.trim() || loading}
                 className="bg-soc-accent hover:bg-soc-accent-glow text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
               >
                 {loading ? 'Creating...' : 'Create Project'}
@@ -175,7 +187,7 @@ export function NewProjectModal({ onClose, onCreated }) {
               </div>
               <div className="flex gap-2 mt-3">
                 <button
-                  onClick={() => navigator.clipboard.writeText(apiKey)}
+                  onClick={() => copyText(apiKey)}
                   className="text-xs bg-soc-panel hover:bg-soc-card px-3 py-1.5 rounded"
                 >
                   Copy
@@ -268,7 +280,7 @@ export function NewProjectModal({ onClose, onCreated }) {
                   </>
                 )}
                 <button
-                  onClick={() => navigator.clipboard.writeText(snippetTab === 'script' ? snippet : aiAgentPrompt)}
+                  onClick={() => copyText(snippetTab === 'script' ? snippet : aiAgentPrompt)}
                   className="text-xs bg-soc-panel hover:bg-soc-card px-3 py-1.5 rounded mt-2"
                 >
                   Copy {snippetTab === 'script' ? 'script tag' : 'prompt'}
@@ -285,7 +297,7 @@ export function NewProjectModal({ onClose, onCreated }) {
                   {snippet}
                 </pre>
                 <button
-                  onClick={() => navigator.clipboard.writeText(snippet)}
+                  onClick={() => copyText(snippet)}
                   className="text-xs bg-soc-panel hover:bg-soc-card px-3 py-1.5 rounded mt-2"
                 >
                   Copy

@@ -92,10 +92,19 @@ def ensure_indexes():
     db.agent_keys.create_index("key_hash", unique=True)
     db.agent_keys.create_index("key_prefix", unique=True)
     db.agent_keys.create_index("created_by")
+    db.projects.create_index("owner_id")
+    db.agent_keys.create_index("project_id")
     db.incidents.create_index("project_id")
+    db.incidents.create_index("id")
     db.incident_evidence.create_index("incident_id")
+    db.threat_suppressions.create_index([("project_id", 1), ("value", 1)])
+    for source in EVENTS_SOURCES:
+        db[f"events_{source}"].create_index("id")
     db.threat_indicators.create_index([("project_id", 1), ("source", 1)])
     db.threat_indicators.create_index([("project_id", 1), ("value", 1)], unique=True)
+    # IOC allowlist: known-good infra (scanners, CI) that must never be
+    # flagged as known threats. One entry per (project, indicator).
+    db.ioc_allowlist.create_index([("project_id", 1), ("indicator", 1)], unique=True)
     # Multi-feed cache: an IP may legitimately appear in several feeds, so the
     # uniqueness is per (value, source_feed), not per value alone.
     try:

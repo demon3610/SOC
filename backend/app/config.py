@@ -22,6 +22,11 @@ THREAT_FEED_REFRESH_HOURS = int(os.getenv("THREAT_FEED_REFRESH_HOURS", "6"))
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 
+# Serve the session cookie with Secure only when the backend itself is on
+# HTTPS (set SECURE_COOKIES=1 in production); dev over plain HTTP keeps False
+# so login keeps working locally.
+SECURE_COOKIES = os.getenv("SECURE_COOKIES", "0") == "1"
+
 # Reverse proxies we allow to set X-Forwarded-For / X-Real-IP (comma-separated
 # IPs or CIDRs). Requests from any other source are treated as direct clients
 # and their forwarded headers are ignored to prevent IP spoofing. The default

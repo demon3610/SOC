@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeft, ChevronDown, Link2, Plus } from 'lucide-react';
+import { ArrowLeft, ChevronDown, Link2, Plus, X, FileText } from 'lucide-react';
 import { api } from '../lib/api';
 import { formatLocalDate, formatLocalTime } from '../lib/time';
 import { PageHeader } from '../components/ui/PageHeader';
 import { useProjectStore } from '../stores/projectStore';
+import { useToastStore } from '../stores/toastStore';
+import { agingLabel } from './IncidentsPage';
 
 function parseSnapshot(ev) {
   try {
@@ -63,7 +65,36 @@ function severityBadgeClass(sev) {
 function statusBadgeClass(status) {
   if (status === 'resolved') return 'bg-emerald-500/12 text-emerald-600';
   if (status === 'investigating') return 'bg-amber-500/15 text-amber-600';
-  return 'bg-soc-panel text-soc-muted';
+  if (status === 'contained') return 'bg-blue-500/12 text-blue-600';
+  if (status === 'false_positive') return 'bg-soc-panel text-soc-muted';
+  return 'bg-red-500/12 text-red-600';
+}
+
+// Markdown-lite: **bold** + "- " list lines. Escaped first, then marked up.
+function renderLiteMd(text) {
+  const esc = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const withBold = esc.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold">$1</strong>');
+  const lines = withBold.split('\n');
+  const out = [];
+  let list = [];
+  const flush = () => {
+    if (list.length) { out.push(`<ul class="list-disc pl-5 space-y-0.5">${list.map((li) => `<li>${li}</li>`).join('')}</ul>`); list = []; }
+  };
+  lines.forEach((ln) => {
+    const m = ln.match(/^\s*[-*]\s+(.*)$/);
+    if (m) list.push(m[1]);
+    else { flush(); if (ln.trim()) out.push(`<p>${ln}</p>`); }
+  });
+  flush();
+  return out.join('');
+}
+
+function evTimeMs(snapshot, fallback) {
+  const raw = snapshot?.timestamp;
+  const t = raw ? new Date(raw).getTime() : NaN;
+  if (!isNaN(t)) return t;
+  const f = fallback ? new Date(fallback).getTime() : NaN;
+  return isNaN(f) ? 0 : f;
 }
 
 function Chip({ label, className }) {
@@ -78,6 +109,10 @@ const ACTION_LABEL = {
   created: 'created incident',
   status_changed: 'changed status',
   severity_changed: 'changed severity',
+  assignee_changed: 'changed assignee',
+  title_changed: 'renamed incident',
+  tags_changed: 'changed tags',
+  resolution_noted: 'recorded resolution',
   note_added: 'added note',
   evidence_attached: 'attached evidence',
   mitigation_added: 'added mitigation item',
@@ -86,13 +121,14 @@ const ACTION_LABEL = {
 
 function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) {
   const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
   const [selected, setSelected] = useState(new Set());
-  const [adding, setAdding] = useState(false);
   const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
 
   const { data } = useQuery({
-    queryKey: ['evidence-picker', projectId, search],
-    queryFn: () => api.events.list(projectId, { query: search || undefined, size: 100 }),
+    queryKey: ['evidence-picker', projectId, debounced],
+    queryFn: () => api.events.list(projectId, { query: debounced || undefined, size: 100 }),
     enabled: open && !!projectId,
   });
 
@@ -100,23 +136,30 @@ function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) 
     if (open) {
       setSelected(new Set());
       setSearch('');
+      setDebounced('');
     }
   }, [open]);
 
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(search.trim()), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
   const addMutation = useMutation({
     mutationFn: async (events) => {
-      for (const ev of events) {
-        await api.incidents.addEvidence(incidentId, {
-          event_snapshot: JSON.stringify(ev),
-          source_event_id: ev.id,
-        });
-      }
+      // Snapshots resolve server-side by id; client payload is just the id.
+      await Promise.all(events.map((ev) => api.incidents.addEvidence(incidentId, {
+        event_snapshot: JSON.stringify(ev),
+        source_event_id: ev.id,
+      })));
     },
-    onSuccess: () => {
+    onSuccess: (_, events) => {
       queryClient.invalidateQueries({ queryKey: ['evidence', incidentId] });
+      addToast(`Attached ${events.length} event${events.length === 1 ? '' : 's'}`, 'success');
       onAdded?.();
       onClose();
     },
+    onError: (err) => addToast(err.message || 'Failed to attach evidence', 'error'),
   });
 
   if (!open) return null;
@@ -160,7 +203,7 @@ function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {events.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-soc-muted">
-              <span className="text-3xl mb-2">📄</span>
+              <FileText size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
               <p className="text-xs">No events found</p>
             </div>
           ) : (
@@ -218,6 +261,7 @@ function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) 
 function ChainPickerModal({ open, projectId, incidentId, evidence, onClose, onAttached }) {
   const [attaching, setAttaching] = useState(null);
   const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
 
   const { data } = useQuery({
     queryKey: ['chain-picker', projectId],
@@ -237,7 +281,7 @@ function ChainPickerModal({ open, projectId, incidentId, evidence, onClose, onAt
   const attach = async (n) => {
     setAttaching(n.hostname);
     try {
-      await api.incidents.attachChain(incidentId, {
+      const res = await api.incidents.attachChain(incidentId, {
         hostname: n.hostname,
         start_time: n.start_time,
         end_time: n.end_time,
@@ -245,8 +289,11 @@ function ChainPickerModal({ open, projectId, incidentId, evidence, onClose, onAt
       queryClient.invalidateQueries({ queryKey: ['evidence', incidentId] });
       queryClient.invalidateQueries({ queryKey: ['incident', incidentId] });
       queryClient.invalidateQueries({ queryKey: ['incident-activity', incidentId] });
+      addToast(`Attached ${res.attached} events from chain on ${n.hostname}`, 'success');
       onAttached?.();
       onClose();
+    } catch (err) {
+      addToast(err.message || 'Failed to attach chain', 'error');
     } finally {
       setAttaching(null);
     }
@@ -277,7 +324,7 @@ function ChainPickerModal({ open, projectId, incidentId, evidence, onClose, onAt
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
           {narratives.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-soc-muted">
-              <span className="text-3xl mb-2">🔗</span>
+              <Link2 size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
               <p className="text-xs">No correlated chains found in the last 72h</p>
             </div>
           ) : (
@@ -319,17 +366,30 @@ export function IncidentDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [note, setNote] = useState('');
+  const [replyTo, setReplyTo] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [chainPickerOpen, setChainPickerOpen] = useState(false);
   const [savedFlash, setSavedFlash] = useState('');
   const [openRaw, setOpenRaw] = useState({});
   const [newMitigation, setNewMitigation] = useState('');
+  const [resolveOpen, setResolveOpen] = useState(false);
+  const [resolutionNote, setResolutionNote] = useState('');
+  const [assignee, setAssignee] = useState('');
+  const [assigneeInit, setAssigneeInit] = useState(false);
+  const [tagInput, setTagInput] = useState('');
 
   const { data: incident, refetch } = useQuery({
     queryKey: ['incident', iid],
     queryFn: () => api.incidents.get(iid),
     enabled: !!iid,
   });
+
+  useEffect(() => {
+    if (incident && !assigneeInit) {
+      setAssignee(incident.assigned_to != null ? String(incident.assigned_to) : '');
+      setAssigneeInit(true);
+    }
+  }, [incident, assigneeInit]);
 
   const { data: evidence, refetch: refetchEvidence } = useQuery({
     queryKey: ['evidence', iid],
@@ -344,25 +404,44 @@ export function IncidentDetailPage() {
     refetchInterval: 30000,
   });
 
+  const firstTechnique = incident?.technique_ids?.[0] || '';
+
   const { data: suggestions } = useQuery({
-    queryKey: ['mitigation-suggestions', pid, iid],
-    queryFn: () => api.incidents.mitigationSuggestions(pid, iid),
+    queryKey: ['mitigation-suggestions', pid, iid, firstTechnique],
+    queryFn: () => api.incidents.mitigationSuggestions(pid, iid, firstTechnique),
     enabled: !!pid && !!iid,
   });
 
+  const { data: related } = useQuery({
+    queryKey: ['incident-related', iid],
+    queryFn: () => api.incidents.related(iid),
+    enabled: !!iid,
+  });
+
   const addNoteMutation = useMutation({
-    mutationFn: (text) => api.incidents.addNote(iid, { text }),
+    mutationFn: ({ text, reply_to }) => api.incidents.addNote(iid, { text, reply_to }),
     onSuccess: () => {
       setNote('');
+      setReplyTo(null);
       refetch();
       queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
     },
   });
 
   const addMitigationMutation = useMutation({
-    mutationFn: (text) => api.incidents.addMitigation(pid, iid, text),
+    mutationFn: ({ text, suggested }) => api.incidents.addMitigation(pid, iid, text, suggested),
     onSuccess: () => {
       setNewMitigation('');
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
+    },
+  });
+
+  const resolveMutation = useMutation({
+    mutationFn: (resolution_note) => api.incidents.resolve(iid, resolution_note),
+    onSuccess: () => {
+      setResolveOpen(false);
+      setResolutionNote('');
       refetch();
       queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
     },
@@ -383,10 +462,38 @@ export function IncidentDetailPage() {
       setSavedFlash('Saved ✔');
       refetch();
       queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
-    } catch {
-      setSavedFlash('Save failed');
+    } catch (err) {
+      setSavedFlash(err.message || 'Save failed');
     }
     setTimeout(() => setSavedFlash(''), 2500);
+  };
+
+  const handleStatusChange = (value) => {
+    // Closing requires a resolution note — route through the resolve modal.
+    if ((value === 'resolved' || value === 'false_positive') && incident?.status !== value) {
+      setResolutionNote(incident?.resolution_note || '');
+      setResolveOpen(value);
+      return;
+    }
+    handleUpdate('status', value);
+  };
+
+  const submitResolve = async () => {
+    if (!resolutionNote.trim()) return;
+    try {
+      if (resolveOpen === 'false_positive') {
+        await api.incidents.update(iid, { status: 'false_positive', resolution_note: resolutionNote.trim() });
+      } else {
+        await resolveMutation.mutateAsync(resolutionNote.trim());
+      }
+      setResolveOpen(false);
+      setResolutionNote('');
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
+    } catch (err) {
+      setSavedFlash(err.message || 'Resolve failed');
+      setTimeout(() => setSavedFlash(''), 2500);
+    }
   };
 
   if (!incident) return null;
@@ -429,6 +536,7 @@ export function IncidentDetailPage() {
           <div className="flex items-center gap-2 ml-4">
             <span className="text-xs text-soc-muted min-w-16 text-right">{savedFlash}</span>
             <select
+              key={incident.severity}
               defaultValue={incident.severity}
               onChange={(e) => handleUpdate('severity', e.target.value)}
               className="bg-white border border-soc-border rounded-lg px-2 py-1 text-xs"
@@ -438,23 +546,89 @@ export function IncidentDetailPage() {
               ))}
             </select>
             <select
+              key={incident.status}
               defaultValue={incident.status}
-              onChange={(e) => handleUpdate('status', e.target.value)}
+              onChange={(e) => handleStatusChange(e.target.value)}
               className="bg-white border border-soc-border rounded-lg px-2 py-1 text-xs"
             >
-              {['open', 'investigating', 'resolved'].map((s) => (
+              {['open', 'investigating', 'contained', 'resolved', 'false_positive'].map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 mb-4">
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
           {chips.map((chip) => (
             <Chip key={chip.label} label={chip.label} className={chip.className} />
           ))}
+          {(incident.hosts || []).map((h) => (
+            <Link key={`h-${h}`} to={`/threat-intel?host=${encodeURIComponent(h)}`} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-soc-accent/30 bg-soc-accent/10 text-soc-accent hover:bg-soc-accent/20" title="Open Threat Intelligence filtered to this host">
+              host: {h}
+            </Link>
+          ))}
+          {(incident.ips || []).slice(0, 4).map((ip) => (
+            <Link key={`ip-${ip}`} to={`/live-events?query=${encodeURIComponent(ip)}`} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-soc-border/60 bg-soc-tint-neutral text-slate-600 hover:border-soc-accent/40" title="Open Live Events for this IP">
+              ip: {ip}
+            </Link>
+          ))}
+          {(incident.users || []).map((u) => (
+            <Link key={`u-${u}`} to={`/live-events?query=${encodeURIComponent(u)}`} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-soc-border/60 bg-soc-panel text-soc-muted hover:text-soc-accent" title="Open Live Events for this user">
+              user: {u}
+            </Link>
+          ))}
+          {(incident.technique_ids || []).map((t) => (
+            <Link key={`t-${t}`} to={`/threat-intel?technique=${encodeURIComponent(t)}`} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-soc-accent/30 bg-soc-accent/10 text-soc-accent font-mono hover:bg-soc-accent/20" title="Open Threat Intelligence filtered to this technique">
+              {t}
+            </Link>
+          ))}
+          {(() => { const a = agingLabel(incident); return a ? <span className={`text-[10px] px-2 py-0.5 rounded-full ${a.hot ? 'bg-red-500/12 text-red-600' : 'bg-amber-500/15 text-amber-600'}`}>{a.text}</span> : null; })()}
           <span className="text-[10px] text-soc-muted ml-2">
             Created {formatLocalDate(incident.created_at)} · Updated {formatLocalDate(incident.updated_at)}
           </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <input
+            value={assignee}
+            onChange={(e) => setAssignee(e.target.value)}
+            onBlur={() => {
+              const v = assignee.trim();
+              const cur = incident.assigned_to != null ? String(incident.assigned_to) : '';
+              if (v !== cur) handleUpdate('assigned_to', v === '' ? null : (isNaN(Number(v)) ? v : Number(v)));
+            }}
+            placeholder="assignee (user id)…"
+            className="w-44 bg-soc-card border border-soc-border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-soc-accent"
+            title="Incident assignee"
+          />
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(incident.tags || []).map((t) => (
+              <span key={t} className="inline-flex items-center gap-1 text-[10px] bg-soc-panel text-soc-muted px-2 py-0.5 rounded-full">
+                #{t}
+                <button
+                  onClick={() => handleUpdate('tags', (incident.tags || []).filter((x) => x !== t))}
+                  className="hover:text-red-600" title="Remove tag"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+            <input
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && tagInput.trim()) {
+                  handleUpdate('tags', [...(incident.tags || []), tagInput.trim()]);
+                  setTagInput('');
+                }
+              }}
+              placeholder="+ tag (Enter)"
+              className="w-28 bg-soc-card border border-dashed border-soc-border rounded-full px-2.5 py-0.5 text-[11px] focus:outline-none focus:border-soc-accent"
+            />
+          </div>
+          {incident.resolution_note && (
+            <span className="text-[10px] text-soc-muted italic" title={incident.resolution_note}>
+              resolution: {incident.resolution_note.length > 80 ? `${incident.resolution_note.slice(0, 80)}…` : incident.resolution_note}
+            </span>
+          )}
         </div>
         <textarea
           defaultValue={incident.description || ''}
@@ -485,7 +659,7 @@ export function IncidentDetailPage() {
       </div>
       {evidence && evidence.length > 0 ? (
         <div className="space-y-2 mb-6">
-          {evidence.map((ev) => {
+          {[...evidence].sort((a, b) => evTimeMs(parseSnapshot(a), a.added_at) - evTimeMs(parseSnapshot(b), b.added_at)).map((ev) => {
             const snapshot = parseSnapshot(ev);
             const summary = snapshot?.summary || snapshot?.raw?.message || '';
             const os = evOs(snapshot);
@@ -496,7 +670,14 @@ export function IncidentDetailPage() {
             return (
               <div key={ev.id} className="glass-card rounded-xl p-4">
                 <div className="flex flex-wrap items-center gap-1.5 mb-2 text-[10px]">
-                  <span className="font-mono bg-soc-panel px-1.5 py-0.5 rounded">{ev.source_event_id}</span>
+                  <Link to={`/live-events?query=${encodeURIComponent(ev.source_event_id || '')}`} className="font-mono bg-soc-panel px-1.5 py-0.5 rounded hover:text-soc-accent" title="Open raw event in Live Events">
+                    {ev.source_event_id}
+                  </Link>
+                  {ev.source && ev.source !== 'live_events' && (
+                    <span className={`px-1.5 py-0.5 rounded ${ev.source === 'correlated_chain' ? 'bg-soc-accent/10 text-soc-accent' : 'bg-soc-panel text-soc-muted'}`}>
+                      {ev.source === 'correlated_chain' ? 'chain' : ev.source}
+                    </span>
+                  )}
                   {snapshot?.event_type && (
                     <span className={`px-1.5 py-0.5 rounded ${
                       snapshot.event_type === 'critical' ? 'bg-red-500/12 text-red-600' :
@@ -549,7 +730,22 @@ export function IncidentDetailPage() {
         </div>
       )}
 
-      <h2 className="text-lg font-semibold mb-3 text-soc-text">Mitigation Checklist</h2>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-lg font-semibold text-soc-text">Mitigation Checklist</h2>
+        {mitigation.length > 0 && (
+          <span className="text-xs text-soc-muted">
+            {mitigation.filter((i) => i.done).length} of {mitigation.length} complete
+          </span>
+        )}
+      </div>
+      {mitigation.length > 0 && (
+        <div className="h-1.5 bg-soc-panel rounded-full overflow-hidden mb-3">
+          <div
+            className="h-full rounded-full bg-emerald-500/70 transition-all"
+            style={{ width: `${Math.round((mitigation.filter((i) => i.done).length / mitigation.length) * 100)}%` }}
+          />
+        </div>
+      )}
       <div className="glass-card rounded-xl p-4 mb-6">
         {mitigation.length > 0 ? (
           <ul className="space-y-1.5 mb-3">
@@ -564,8 +760,13 @@ export function IncidentDetailPage() {
                   {item.done ? '✔' : ''}
                 </button>
                 <span className="flex-1 min-w-0">
-                  <span className={`block text-sm ${item.done ? 'line-through text-soc-muted' : 'text-soc-text'}`}>
-                    {item.text}
+                  <span className="flex items-center gap-1.5">
+                    <span className={`block text-sm ${item.done ? 'line-through text-soc-muted' : 'text-soc-text'}`}>
+                      {item.text}
+                    </span>
+                    {item.suggested && !item.done && (
+                      <span className="text-[9px] px-1 py-px rounded bg-soc-accent/10 text-soc-accent shrink-0">suggested</span>
+                    )}
                   </span>
                   {item.done && (
                     <span className="text-[10px] text-soc-muted">
@@ -582,13 +783,13 @@ export function IncidentDetailPage() {
         {suggestions?.suggestions?.length > 0 && (
           <div className="mb-3">
             {suggestions.suggestions.map((s) => (
-              <div key={s.tactic} className="mb-1.5">
-                <span className="text-[10px] font-semibold text-soc-accent">{s.tactic}</span>
+              <div key={s.tactic || s.technique} className="mb-1.5">
+                <span className="text-[10px] font-semibold text-soc-accent">{s.technique || s.tactic}</span>
                 <div className="flex flex-wrap gap-1.5 mt-1">
                   {s.items.map((text) => (
                     <button
                       key={text}
-                      onClick={() => addMitigationMutation.mutate(text)}
+                      onClick={() => addMitigationMutation.mutate({ text, suggested: true })}
                       disabled={addMitigationMutation.isPending}
                       className="text-[11px] border border-dashed border-soc-accent/40 text-soc-accent hover:bg-soc-accent/10 rounded-full px-2.5 py-0.5 transition-colors disabled:opacity-50"
                     >
@@ -605,13 +806,13 @@ export function IncidentDetailPage() {
             value={newMitigation}
             onChange={(e) => setNewMitigation(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && newMitigation.trim()) addMitigationMutation.mutate(newMitigation.trim());
+              if (e.key === 'Enter' && newMitigation.trim()) addMitigationMutation.mutate({ text: newMitigation.trim(), suggested: false });
             }}
             placeholder="Add a mitigation item…"
             className="flex-1 bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-soc-accent"
           />
           <button
-            onClick={() => addMitigationMutation.mutate(newMitigation.trim())}
+            onClick={() => addMitigationMutation.mutate({ text: newMitigation.trim(), suggested: false })}
             disabled={!newMitigation.trim() || addMitigationMutation.isPending}
             className="bg-soc-accent hover:bg-soc-accent-glow text-white px-3 py-1.5 rounded text-xs disabled:opacity-50"
           >
@@ -624,27 +825,82 @@ export function IncidentDetailPage() {
       <div className="glass-card rounded-xl p-4 mb-6">
         {incident.notes && incident.notes.length > 0 && (
           <ul className="space-y-2 mb-3">
-            {incident.notes.map((n) => (
-              <li key={n.id} className="flex items-start justify-between gap-3 bg-soc-card border border-soc-border rounded-lg px-3 py-2">
-                <span className="text-sm text-soc-text whitespace-pre-wrap">{n.text}</span>
-                <span className="text-[10px] text-soc-muted shrink-0 pt-0.5">{formatLocalDate(n.added_at)}</span>
-              </li>
-            ))}
+            {[...incident.notes].sort((a, b) => new Date(a.added_at) - new Date(b.added_at)).map((n) => {
+              const parent = (incident.notes || []).find((p) => p.id === n.reply_to);
+              return (
+                <li key={n.id} className={`bg-soc-card border border-soc-border rounded-lg px-3 py-2 ${n.reply_to ? 'ml-6 border-l-2 border-l-soc-accent/40' : ''}`}>
+                  {parent && (
+                    <p className="text-[10px] text-soc-muted italic mb-1 truncate" title={parent.text}>
+                      ↳ replying to: {parent.text.slice(0, 90)}{parent.text.length > 90 ? '…' : ''}
+                    </p>
+                  )}
+                  <div
+                    className="text-sm text-soc-text space-y-1"
+                    dangerouslySetInnerHTML={{ __html: renderLiteMd(n.text) }}
+                  />
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[10px] text-soc-muted">{formatLocalDate(n.added_at)}</span>
+                    <button
+                      onClick={() => setReplyTo(n.id)}
+                      className="text-[10px] text-soc-muted hover:text-soc-accent"
+                    >
+                      Reply
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
+        )}
+        {replyTo && (
+          <div className="flex items-center gap-2 mb-2 text-[11px] text-soc-muted">
+            <span>Replying to note #{replyTo}</span>
+            <button onClick={() => setReplyTo(null)} className="hover:text-red-600"><X size={12} /></button>
+          </div>
         )}
         <textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="Add a note..."
+          placeholder="Add a note... (**bold**, - lists)"
           className="w-full bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-soc-accent min-h-[60px]"
         />
         <button
-          onClick={() => addNoteMutation.mutate(note)}
+          onClick={() => addNoteMutation.mutate({ text: note, reply_to: replyTo })}
           disabled={!note.trim() || addNoteMutation.isPending}
           className="mt-2 bg-soc-accent hover:bg-soc-accent-glow text-white px-3 py-1.5 rounded text-xs disabled:opacity-50"
         >
-          {addNoteMutation.isPending ? 'Adding…' : 'Add Note'}
+          {addNoteMutation.isPending ? 'Adding…' : replyTo ? 'Reply' : 'Add Note'}
         </button>
+      </div>
+
+      <h2 className="text-lg font-semibold mb-3 text-soc-text">Related Incidents</h2>
+      <div className="glass-card rounded-xl p-4 mb-6">
+        {!related || related.total === 0 ? (
+          <p className="text-sm text-soc-muted">No other incidents share a host, IP, user, or technique with this one.</p>
+        ) : (
+          <div className="space-y-2">
+            {related.related.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => navigate(`/incidents/${r.id}`)}
+                className="w-full flex items-center gap-3 p-2.5 rounded-lg bg-soc-card border border-soc-border/60 hover:bg-soc-panel transition-colors text-left"
+              >
+                <span className="flex-1 min-w-0">
+                  <span className="block text-sm text-soc-text truncate">#{r.id} · {r.title}</span>
+                  <span className="flex flex-wrap gap-1 mt-1">
+                    {Object.entries(r.shared).map(([k, vals]) => (
+                      <span key={k} className="text-[10px] bg-soc-accent/10 text-soc-accent px-1.5 py-px rounded" title={`${k}: ${vals.join(', ')}`}>
+                        {k}: {vals.slice(0, 2).join(', ')}{vals.length > 2 ? ` +${vals.length - 2}` : ''}
+                      </span>
+                    ))}
+                  </span>
+                </span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${severityBadgeClass(r.severity)}`}>{r.severity}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${statusBadgeClass(r.status)}`}>{r.status}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <h2 className="text-lg font-semibold mb-3 text-soc-text">Activity Log</h2>
@@ -656,7 +912,10 @@ export function IncidentDetailPage() {
                 <span className="text-soc-text">
                   <span className="font-medium">{a.user_name}</span>{' '}
                   <span className="text-soc-muted">
-                    {ACTION_LABEL[a.action] || a.action}: {a.detail}
+                    {ACTION_LABEL[a.action] || a.action}
+                    {a.from_value != null && a.to_value != null && a.from_value !== '' && a.to_value !== ''
+                      ? `: ${a.from_value} → ${a.to_value}`
+                      : a.detail ? `: ${a.detail}` : ''}
                   </span>
                 </span>
                 <span className="text-[10px] text-soc-muted shrink-0 pt-1">
@@ -669,6 +928,46 @@ export function IncidentDetailPage() {
           <p className="text-sm text-soc-muted">No activity recorded yet.</p>
         )}
       </div>
+
+      {resolveOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-soc-overlay/60 p-4"
+          onClick={() => setResolveOpen(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.95 }}
+            animate={{ scale: 1 }}
+            className="glass-elevated rounded-xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold text-soc-text mb-1">
+              {resolveOpen === 'false_positive' ? 'Dismiss as false positive' : 'Resolve incident'}
+            </h2>
+            <p className="text-xs text-soc-muted mb-4">
+              Closing requires a resolution note so the record shows why.
+            </p>
+            <textarea
+              value={resolutionNote}
+              onChange={(e) => setResolutionNote(e.target.value)}
+              placeholder="What was done / why is this closed?"
+              className="w-full bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-soc-accent min-h-[80px] mb-4"
+            />
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setResolveOpen(false)} className="text-sm text-soc-muted">Cancel</button>
+              <button
+                onClick={submitResolve}
+                disabled={!resolutionNote.trim() || resolveMutation.isPending}
+                className="bg-soc-accent hover:bg-soc-accent-glow text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+              >
+                {resolveMutation.isPending ? 'Closing…' : resolveOpen === 'false_positive' ? 'Dismiss' : 'Resolve'}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
 
       <EvidencePickerModal
         open={pickerOpen}

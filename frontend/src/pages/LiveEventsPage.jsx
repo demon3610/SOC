@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { Zap, ShieldAlert } from 'lucide-react';
 import { api } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useProjectStore } from '../stores/projectStore';
@@ -14,6 +15,9 @@ const MAX_EVENTS = 200;
 const FLUSH_INTERVAL_MS = 250;
 const ANIMATED_ROWS = 2;
 const PAGE_SIZE = 100;
+// History pages may accumulate beyond the live cap so "Load older" never
+// fetches rows that are immediately thrown away.
+const HISTORY_CAP = 1000;
 
 const SEVERITY_CLASS = {
   critical: 'severity-critical', high: 'severity-high',
@@ -134,6 +138,11 @@ const EventRow = memo(
           <span className={`w-24 shrink-0 text-xs px-1.5 py-0.5 rounded ${event.source === 'website' ? 'badge-website' : event.source === 'linux' ? 'badge-linux' : 'badge-system'}`}>
             {event.source}
           </span>
+          {(event.category === 'heartbeat' || event.category === 'lifecycle') && (
+            <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${event.category === 'heartbeat' ? 'bg-blue-500/12 text-blue-600' : 'bg-soc-panel text-soc-muted'}`}>
+              {event.category}
+            </span>
+          )}
           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
             event.event_type === 'critical' ? 'bg-red-500/12 text-red-600' :
             event.event_type === 'high' ? 'bg-amber-500/15 text-amber-600' :
@@ -226,6 +235,7 @@ export function LiveEventsPage() {
   const hostParam = searchParams.get('host') || '';
   const severityParam = searchParams.get('severity') || 'all';
   const queryParam = searchParams.get('query') || '';
+  const categoryParam = searchParams.get('category') || 'all';
 
   const [searchText, setSearchText] = useState(queryParam);
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -256,15 +266,17 @@ export function LiveEventsPage() {
   }, [searchText]);
 
   const activeSeverity = SEVERITIES.includes(severityParam) ? severityParam : 'all';
+  const activeCategory = ['all', 'security_event', 'heartbeat', 'lifecycle'].includes(categoryParam) ? categoryParam : 'all';
   const filters = {
     query: debouncedQuery || undefined,
     event_type: activeSeverity !== 'all' ? activeSeverity : undefined,
     host: hostParam || undefined,
+    category: activeCategory !== 'all' ? activeCategory : undefined,
   };
-  const hasFilters = Boolean(filters.query || filters.event_type || filters.host);
+  const hasFilters = Boolean(filters.query || filters.event_type || filters.host || filters.category);
   const filtersKey = JSON.stringify(filters);
 
-  const { data: initial, isLoading, isError } = useQuery({
+  const { data: initial, isLoading, isError, refetch: refetchInitial } = useQuery({
     queryKey: ['events', pid, filtersKey],
     queryFn: () => api.events.list(pid, { ...filters, size: PAGE_SIZE }),
     enabled: !!pid,
@@ -280,8 +292,17 @@ export function LiveEventsPage() {
 
   const matchesFilters = useCallback((e) => {
     if (activeSeverity !== 'all' && e.event_type !== activeSeverity) return false;
+    // Mirror the server predicate exactly: 'all' is the curated feed
+    // (security_event or uncategorized website docs), raw buckets are exact.
+    if (activeCategory === 'heartbeat' || activeCategory === 'lifecycle') {
+      if (e.category !== activeCategory) return false;
+    } else if (activeCategory === 'security_event') {
+      if (e.category !== 'security_event') return false;
+    } else if (e.category && e.category !== 'security_event') {
+      return false;
+    }
     if (hostParam) {
-      const h = (e.raw?.hostname || '').toLowerCase();
+      const h = (e.hostname || e.raw?.hostname || '').toLowerCase();
       if (!h.includes(hostParam.toLowerCase())) return false;
     }
     if (debouncedQuery) {
@@ -289,7 +310,7 @@ export function LiveEventsPage() {
       if (!haystack.includes(debouncedQuery.toLowerCase())) return false;
     }
     return true;
-  }, [activeSeverity, hostParam, debouncedQuery]);
+  }, [activeSeverity, activeCategory, hostParam, debouncedQuery]);
 
   const { connected } = useWebSocket(pid, useCallback((event) => {
     pendingRef.current.push(event);
@@ -306,9 +327,11 @@ export function LiveEventsPage() {
       setEvents((prev) => {
         const seen = new Set(prev.map((e) => e.id));
         const fresh = batch.filter((e) => !seen.has(e.id) && matchesFilters(e));
-        return [...fresh, ...prev].slice(0, MAX_EVENTS);
+        return [...fresh, ...prev].slice(0, HISTORY_CAP);
       });
-      if (parentRef.current) {
+      // Only jump to top when the user is already near it — never yank the
+      // scrollbar while they read history below.
+      if (parentRef.current && parentRef.current.scrollTop < 120) {
         parentRef.current.scrollTop = 0;
       }
     }, FLUSH_INTERVAL_MS);
@@ -319,12 +342,15 @@ export function LiveEventsPage() {
     if (loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const res = await api.events.list(pid, { ...filters, size: PAGE_SIZE, offset: loadedCount });
+      // Derive filters from the key so the callback never closes over a
+      // stale filter object when only its contents changed.
+      const liveFilters = JSON.parse(filtersKey);
+      const res = await api.events.list(pid, { ...liveFilters, size: PAGE_SIZE, offset: loadedCount });
       const older = res.events || [];
       const seen = new Set(eventsRef.current.map((e) => e.id));
       const fresh = older.filter((e) => !seen.has(e.id));
       if (fresh.length > 0) {
-        setEvents([...eventsRef.current, ...fresh].slice(0, MAX_EVENTS));
+        setEvents([...eventsRef.current, ...fresh].slice(0, HISTORY_CAP));
         setLoadedCount((c) => c + fresh.length);
       }
       if (res.total != null) setTotal(res.total);
@@ -339,6 +365,13 @@ export function LiveEventsPage() {
     const next = new URLSearchParams(searchParams);
     if (sev === 'all') next.delete('severity');
     else next.set('severity', sev);
+    setSearchParams(next, { replace: true });
+  };
+
+  const setCategory = (cat) => {
+    const next = new URLSearchParams(searchParams);
+    if (!cat || cat === 'all') next.delete('category');
+    else next.set('category', cat);
     setSearchParams(next, { replace: true });
   };
 
@@ -384,8 +417,9 @@ export function LiveEventsPage() {
             </span>
             {events.length > 0 && (
               <button
-                onClick={() => setEvents([])}
+                onClick={() => { setEvents([]); setLoadedCount(0); setTotal(0); refetchInitial(); }}
                 className="text-xs text-soc-muted hover:text-soc-accent bg-white border border-soc-border hover:bg-soc-panel px-2.5 py-1 rounded-lg transition-colors"
+                title="Clear the list and reload from the newest events"
               >
                 Clear
               </button>
@@ -408,6 +442,17 @@ export function LiveEventsPage() {
               <button onClick={clearHost} className="hover:text-soc-text" title="Clear host filter">✕</button>
             </span>
           )}
+          <select
+            value={activeCategory}
+            onChange={(e) => setCategory(e.target.value)}
+            className="text-xs bg-soc-card border border-soc-border rounded-lg px-2 py-1.5 text-soc-muted focus:outline-none focus:border-soc-accent shrink-0"
+            title="Event stream: security detections or raw agent logs"
+          >
+            <option value="all">security feed</option>
+            <option value="security_event">security only</option>
+            <option value="heartbeat">heartbeats</option>
+            <option value="lifecycle">raw agent logs</option>
+          </select>
           {hasFilters && (
             <button onClick={clearAll} className="text-xs text-soc-muted hover:text-soc-accent bg-soc-card hover:bg-soc-panel px-2 py-1.5 rounded-lg">
               Clear all
@@ -455,12 +500,12 @@ export function LiveEventsPage() {
             </div>
           ) : isError ? (
             <div className="flex flex-col items-center justify-center py-16 text-soc-muted">
-              <span className="text-4xl mb-2">⚠</span>
+              <ShieldAlert size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
               <p className="text-sm text-red-600">Failed to load events</p>
             </div>
           ) : events.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-soc-muted">
-              <span className="text-4xl mb-2">⚡</span>
+              <Zap size={28} strokeWidth={1.5} className="text-slate-400 mb-2" />
               <p className="text-sm">{hasFilters ? 'No events match your filters' : 'No events received yet'}</p>
               <p className="text-xs mt-1">
                 {hasFilters

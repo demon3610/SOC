@@ -28,6 +28,15 @@ export async function requestFile(path, opts = {}) {
 
 export const WS_BASE = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
+// Shared threat-intel cross-filter query builder (window + host + technique + severity).
+export function threatQuery(window = '24h', filters = {}) {
+  const q = new URLSearchParams({ window });
+  if (filters.host) q.set('host', filters.host);
+  if (filters.techniqueId) q.set('technique_id', filters.techniqueId);
+  if (filters.minSeverity) q.set('min_severity', filters.minSeverity);
+  return q;
+}
+
 const WEBSITE_KEYS_STORAGE = 'soc_website_keys';
 
 export function saveWebsiteKey(projectId, key) {
@@ -58,6 +67,10 @@ export const api = {
     logout: () => request('/auth/logout', { method: 'POST' }),
     me: () => request('/auth/me'),
     meRaw: () => fetch(`${BASE}/auth/me`, { credentials: 'include' }),
+    updateMe: (body) =>
+      request('/auth/me', { method: 'PATCH', body: JSON.stringify(body) }),
+    changePassword: (body) =>
+      request('/auth/change-password', { method: 'POST', body: JSON.stringify(body) }),
   },
   projects: {
     list: () => request('/projects'),
@@ -126,7 +139,7 @@ export const api = {
       request(`/projects/${projectId}/events/cleanup`, {
         method: 'DELETE',
         body: JSON.stringify({ ...filters, expected_count: expectedCount }),
-      }).then((r) => ({ deleted_count: r.deleted_count })),
+      }).then((r) => ({ deleted_count: r.deleted_count, es_synced: r.es_synced ?? true })),
   },
   agentLogs: {
     cleanupPreview: (projectId, filters) =>
@@ -143,7 +156,7 @@ export const api = {
       request(`/projects/${projectId}/agent-logs/cleanup`, {
         method: 'DELETE',
         body: JSON.stringify({ ...filters, expected_count: expectedCount }),
-      }).then((r) => ({ deleted_count: r.deleted_count })),
+      }).then((r) => ({ deleted_count: r.deleted_count, es_synced: r.es_synced ?? true })),
   },
   threatIntel: {
     flagged: (projectId, limit = 50) =>
@@ -156,14 +169,51 @@ export const api = {
       request(`/projects/${projectId}/threat/correlation`),
     refresh: (projectId) =>
       request(`/projects/${projectId}/threat/refresh`, { method: 'POST' }),
-    tactics: (projectId, window = '24h') =>
-      request(`/projects/${projectId}/threat-intel/tactics?window=${window}`),
-    timeline: (projectId, window = '24h') =>
-      request(`/projects/${projectId}/threat-intel/timeline?window=${window}`),
-    narratives: (projectId, hours = 24) =>
-      request(`/projects/${projectId}/threat-intel/narratives?hours=${hours}`),
-    topHosts: (projectId, window = '24h') =>
-      request(`/projects/${projectId}/threat-intel/top-hosts?window=${window}`),
+    tactics: (projectId, window = '24h', filters = {}) =>
+      request(`/projects/${projectId}/threat-intel/tactics?${threatQuery(window, filters)}`),
+    timeline: (projectId, window = '24h', filters = {}) =>
+      request(`/projects/${projectId}/threat-intel/timeline?${threatQuery(window, filters)}`),
+    narratives: (projectId, hours = 24, filters = {}) => {
+      const q = new URLSearchParams({ hours });
+      if (filters.host) q.set('host', filters.host);
+      if (filters.techniqueId) q.set('technique_id', filters.techniqueId);
+      if (filters.minSeverity) q.set('min_severity', filters.minSeverity);
+      return request(`/projects/${projectId}/threat-intel/narratives?${q}`);
+    },
+    topHosts: (projectId, window = '24h', filters = {}) =>
+      request(`/projects/${projectId}/threat-intel/top-hosts?${threatQuery(window, filters)}`),
+    knownIps: (projectId, window = '24h', filters = {}) =>
+      request(`/projects/${projectId}/threat-intel/known-ips?${threatQuery(window, filters)}`),
+    geo: (projectId, window = '24h', filters = {}) =>
+      request(`/projects/${projectId}/threat-intel/geo?${threatQuery(window, filters)}`),
+    graph: (projectId, window = '24h', filters = {}, minWeight = 1) => {
+      const q = new URLSearchParams(threatQuery(window, filters));
+      q.set('min_weight', minWeight);
+      return request(`/projects/${projectId}/threat-intel/graph?${q}`);
+    },
+    bucket: (projectId, window = '24h', bucketStart, filters = {}) => {
+      const q = new URLSearchParams({ window, bucket_start: bucketStart });
+      if (filters.host) q.set('host', filters.host);
+      if (filters.techniqueId) q.set('technique_id', filters.techniqueId);
+      if (filters.minSeverity) q.set('min_severity', filters.minSeverity);
+      return request(`/projects/${projectId}/threat-intel/timeline/bucket?${q}`);
+    },
+    triage: (projectId, eventId, body) =>
+      request(`/projects/${projectId}/threat-intel/events/${eventId}/triage`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    allowlist: (projectId) =>
+      request(`/projects/${projectId}/threat-intel/allowlist`),
+    allowlistAdd: (projectId, body) =>
+      request(`/projects/${projectId}/threat-intel/allowlist`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    allowlistRemove: (projectId, indicator) =>
+      request(`/projects/${projectId}/threat-intel/allowlist/${encodeURIComponent(indicator)}`, {
+        method: 'DELETE',
+      }),
     allIndicators: (projectId, { page = 1, pageSize = 50, sourceFeed = '' } = {}) => {
       const q = new URLSearchParams({ page, page_size: pageSize });
       if (sourceFeed) q.set('source_feed', sourceFeed);
@@ -176,12 +226,26 @@ export const api = {
       }),
   },
   incidents: {
-    list: (projectId) => request(`/projects/${projectId}/incidents`),
+    list: (projectId, params = {}) => {
+      const q = new URLSearchParams();
+      ['status', 'severity', 'assigned_to', 'technique_id', 'host', 'tag', 'sort'].forEach((k) => {
+        if (params[k] !== undefined && params[k] !== '' && params[k] !== null) q.set(k, params[k]);
+      });
+      const qs = q.toString();
+      return request(`/projects/${projectId}/incidents${qs ? `?${qs}` : ''}`);
+    },
     create: (projectId, body) =>
       request(`/projects/${projectId}/incidents`, { method: 'POST', body: JSON.stringify(body) }),
     get: (incidentId) => request(`/incidents/${incidentId}`),
     update: (incidentId, body) =>
       request(`/incidents/${incidentId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    resolve: (incidentId, resolutionNote) =>
+      request(`/incidents/${incidentId}/resolve`, {
+        method: 'POST', body: JSON.stringify({ resolution_note: resolutionNote }),
+      }),
+    related: (incidentId) => request(`/incidents/${incidentId}/related`),
+    bulk: (projectId, body) =>
+      request(`/projects/${projectId}/incidents/bulk`, { method: 'POST', body: JSON.stringify(body) }),
     listEvidence: (incidentId) => request(`/incidents/${incidentId}/evidence`),
     addEvidence: (incidentId, body) =>
       request(`/incidents/${incidentId}/evidence`, { method: 'POST', body: JSON.stringify(body) }),
@@ -190,16 +254,16 @@ export const api = {
     addNote: (incidentId, body) =>
       request(`/incidents/${incidentId}/notes`, { method: 'POST', body: JSON.stringify(body) }),
     activity: (incidentId) => request(`/incidents/${incidentId}/activity`),
-    addMitigation: (projectId, incidentId, text) =>
+    addMitigation: (projectId, incidentId, text, suggested = false) =>
       request(`/projects/${projectId}/incidents/${incidentId}/mitigation`, {
-        method: 'POST', body: JSON.stringify({ text }),
+        method: 'POST', body: JSON.stringify({ text, suggested }),
       }),
     toggleMitigation: (projectId, incidentId, itemId, done) =>
       request(`/projects/${projectId}/incidents/${incidentId}/mitigation/${itemId}`, {
         method: 'PATCH', body: JSON.stringify({ done }),
       }),
-    mitigationSuggestions: (projectId, incidentId) =>
-      request(`/projects/${projectId}/incidents/${incidentId}/mitigation/suggestions`),
+    mitigationSuggestions: (projectId, incidentId, techniqueId = '') =>
+      request(`/projects/${projectId}/incidents/${incidentId}/mitigation/suggestions${techniqueId ? `?technique_id=${encodeURIComponent(techniqueId)}` : ''}`),
     reportPdf: (projectId, incidentId) =>
       requestFile(`/projects/${projectId}/incidents/${incidentId}/report`, { method: 'POST' }),
     bulkReports: (projectId, incidentIds) =>
@@ -216,7 +280,12 @@ export const api = {
     listKeys: () => request('/agents/keys'),
     revokeKey: (keyId) =>
       request(`/agents/keys/${keyId}`, { method: 'DELETE' }),
-    listLogs: (limit = 50, offset = 0) =>
-      request(`/agents/logs?limit=${limit}&offset=${offset}`),
+    listLogs: (limit = 50, offset = 0, params = {}) => {
+      const q = new URLSearchParams({ limit, offset });
+      ['hostname', 'category', 'project_id', 'query'].forEach((k) => {
+        if (params[k] !== undefined && params[k] !== '' && params[k] !== null) q.set(k, params[k]);
+      });
+      return request(`/agents/logs?${q}`);
+    },
   },
 };

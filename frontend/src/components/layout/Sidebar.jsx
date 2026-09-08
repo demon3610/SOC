@@ -5,7 +5,7 @@ import {
   Menu,
   X,
   Shield,
-  LayoutGrid,
+  Briefcase,
   LayoutDashboard,
   Activity,
   Globe,
@@ -19,7 +19,7 @@ import {
 import { useProjectStore } from "../../stores/projectStore";
 
 const navItems = [
-  { label: "Workspace", path: "/workspace", icon: LayoutGrid },
+  { label: "Workspace", path: "/workspace", icon: Briefcase },
   {
     label: "Overview",
     path: "overview",
@@ -32,6 +32,7 @@ const navItems = [
     icon: Activity,
     requiresProject: true,
   },
+
   {
     label: "Threat Intelligence",
     path: "threat-intel",
@@ -51,6 +52,7 @@ const navItems = [
     icon: Braces,
     requiresProject: true,
   },
+
   {
     label: "Data Cleanup",
     path: "data-cleanup",

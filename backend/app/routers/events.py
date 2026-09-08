@@ -17,6 +17,7 @@ def _event_to_dict(e: dict) -> dict:
         "id": e.get("id"),
         "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
         "source": e.get("source", "unknown"),
+        "category": e.get("category", ""),
         "event_type": e.get("event_type", "generic"),
         "summary": e.get("summary", ""),
         "parsed": e.get("parsed", {}),
@@ -26,10 +27,16 @@ def _event_to_dict(e: dict) -> dict:
     }
 
 
+RAW_CATEGORIES = ("heartbeat", "lifecycle")
+NAMED_CATEGORIES = (*RAW_CATEGORIES, "security_event")
+
+
 def _base_mongo_q(project_id: int, event_type: str | None, severity: str | None,
-                  query: str | None, host: str | None) -> dict:
+                  query: str | None, host: str | None, category: str | None = None) -> dict:
     mongo_q = {"project_id": {"$in": [project_id, str(project_id)]}}
-    conds = [EVENTS_VIEW_COND]
+    # A named category narrows to exactly that bucket (so "security only"
+    # excludes uncategorized website docs); unset keeps the curated surface.
+    conds = [{"category": category}] if category in NAMED_CATEGORIES else [EVENTS_VIEW_COND]
     if event_type:
         mongo_q["event_type"] = event_type
     elif severity:
@@ -50,6 +57,7 @@ def list_events(
     source: str = Query(None, description="Filter to one source: website | windows | linux | all"),
     event_type: str = Query(None),
     host: str = Query(None),
+    category: str = Query(None, description="Raw agent bucket: heartbeat | lifecycle | security_event | all"),
     time_from: str = Query(None),
     time_to: str = Query(None),
     size: int = Query(50),
@@ -63,30 +71,39 @@ def list_events(
     from that source's collection. Without it (or with ``source=all``) the
     three collections are merged into one time-sorted feed (Elasticsearch
     first, MongoDB as fallback) so the Live Events view stays unified.
+
+    ``category=heartbeat|lifecycle`` opens the raw agent stream (bypassing
+    Elasticsearch, which only indexes the security surface); anything else
+    keeps the curated security-event feed.
     """
     project_id = project["id"]
 
     if source == "all":
         source = None
+    if category == "all":
+        category = None
+    if category and category not in (*RAW_CATEGORIES, "security_event"):
+        raise HTTPException(status_code=400, detail="Invalid category; expected one of heartbeat, lifecycle, security_event, all")
 
     if source:
         if source not in EVENTS_SOURCES:
             raise HTTPException(status_code=400, detail=f"Invalid source; expected one of {', '.join(EVENTS_SOURCES)}")
         col = get_events_collection(source)
-        q = _base_mongo_q(project_id, event_type, severity, query, host)
+        q = _base_mongo_q(project_id, event_type, severity, query, host, category)
         docs = list(col.find(q, NO_ID).sort([("timestamp", -1), ("_id", -1)]).skip(offset).limit(size))
         return {"events": [_event_to_dict(d) for d in docs], "total": col.count_documents(q)}
 
-    events_list, total = search_events(
-        project_id, query, severity, source, event_type,
-        time_from, time_to, size, offset,
-    )
-    if events_list:
-        return {"events": events_list, "total": total}
+    if category not in NAMED_CATEGORIES:
+        events_list, total = search_events(
+            project_id, query, severity, source, event_type,
+            time_from, time_to, size, offset,
+        )
+        if events_list:
+            return {"events": events_list, "total": total}
 
     # Merge the three per-source collections and re-sort in Python — Mongo
     # cannot sort across collections natively.
-    q = _base_mongo_q(project_id, event_type, severity, query, host)
+    q = _base_mongo_q(project_id, event_type, severity, query, host, category)
     merged = []
     for src in EVENTS_SOURCES:
         merged.extend(
@@ -157,14 +174,15 @@ def _matched_events(db, project_id: int, source: str, hostname: str | None,
     docs = []
     for col in cols:
         total += col.count_documents(q)
+        # Fetch through the requested page per collection, slice once below —
+        # skipping in both places would drop rows across collections.
         docs.extend(
             col.find(q, NO_ID)
             .sort([("timestamp", -1), ("_id", -1)])
-            .skip(offset)
-            .limit(size)
+            .limit(offset + size)
         )
     docs.sort(key=lambda d: (str(d.get("timestamp", "")), str(d.get("id", ""))), reverse=True)
-    return docs[:size], total
+    return docs[offset: offset + size], total
 
 
 def _oldest_newest(db, project_id: int, source: str, hostname: str | None, before_iso: str):
@@ -231,11 +249,14 @@ def cleanup_events(project_id: int, body: CleanupExecute,
     """Execute the cleanup shown by the preview.
 
     Re-validates ``expected_count`` against a fresh server-side count first:
-    if new events arrived (or any were removed) between preview and confirm,
-    the request is rejected with 409 so a confirm click can never delete a
-    different set than what was displayed. Deletes from the relevant events_*
-    collections AND issues the matching Elasticsearch delete_by_query, then
-    records the action in the immutable ``audit_log`` collection.
+    if the matching set changed between preview and confirm, the request is
+    rejected with 409. (Standalone Mongo has no multi-document transactions,
+    so rows arriving between the re-count and the delete still match the same
+    cutoff query — the guard catches drift, not same-millisecond races.)
+    Deletes from the relevant events_* collections AND issues the matching
+    Elasticsearch delete_by_query, then records the action in the immutable
+    ``audit_log`` collection. ``es_synced`` is false when ES was unreachable;
+    Mongo stays the source of truth either way.
     """
     if body.source not in EVENTS_SOURCES and body.source != "all":
         raise HTTPException(status_code=400, detail=f"Invalid source; expected one of all, {', '.join(EVENTS_SOURCES)}")
@@ -257,10 +278,10 @@ def cleanup_events(project_id: int, body: CleanupExecute,
     for col in cols:
         deleted += col.delete_many(q).deleted_count
 
-    delete_events_by_query(project_id, None if body.source == "all" else body.source, before_iso, body.hostname)
+    es_deleted = delete_events_by_query(project_id, None if body.source == "all" else body.source, before_iso, body.hostname)
 
     record_cleanup(db, user, project_id, body.source, body.hostname, before_iso, deleted, scope="events")
-    return {"deleted_count": deleted}
+    return {"deleted_count": deleted, "es_synced": es_deleted >= 0}
 
 
 @router.get("/events/{event_id}", summary="Get a single event by id")

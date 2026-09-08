@@ -1,8 +1,9 @@
 const IST_TZ = 'Asia/Kolkata';
 
-function toDate(isoString) {
+export function toDate(isoString) {
   if (!isoString) return null;
-  let str = String(isoString);
+  if (isoString instanceof Date) return isNaN(isoString.getTime()) ? null : isoString;
+  let str = String(isoString).trim().replace(' ', 'T');
   if (!str.endsWith('Z') && !str.includes('+') && str.length >= 19) {
     str = str + 'Z';
   }
@@ -43,7 +44,7 @@ export function formatChartBucket(key) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
     iso = `${str}T00:00:00Z`;
   } else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(str)) {
-    iso = `${str}:00Z`;
+    iso = `${str.replace(' ', 'T')}:00Z`;
   }
   const date = new Date(iso);
   if (isNaN(date.getTime())) return str;

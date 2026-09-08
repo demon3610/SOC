@@ -70,6 +70,45 @@ def event_hostname(snap: dict | None) -> str | None:
     return str(host) or None
 
 
+_EMPTY_USERS = {"", "unknown", "-", "n/a", "none", "null"}
+
+
+def event_user(snap: dict | None) -> str | None:
+    """Authenticated/target user stamped by the log parser (if any)."""
+    if not snap:
+        return None
+    user = ((snap.get("parsed") or {}).get("user")) or ((snap.get("raw") or {}).get("user")) or ""
+    user = str(user).strip()
+    return user if user and user.lower() not in _EMPTY_USERS else None
+
+
+def linked_entities(evidence_docs: list[dict]) -> dict:
+    """Hosts / IPs / users / technique ids derived from attached evidence.
+
+    Deliberately computed per request (like mitre tags) so the linked-entity
+    chips stay in lockstep with whatever evidence is actually attached.
+    """
+    hosts: list[str] = []
+    ips: list[str] = []
+    users: list[str] = []
+    techniques: list[str] = []
+    for ev in evidence_docs:
+        snap = parse_snapshot(ev)
+        for value, bucket in (
+            (event_hostname(snap), hosts),
+            (event_ip(snap), ips),
+            (event_user(snap), users),
+        ):
+            if value and value not in bucket:
+                bucket.append(value)
+        m = event_mitre(snap)
+        if m and m.get("technique"):
+            tid = str(m["technique"]).split(" ")[0]
+            if tid and tid not in techniques:
+                techniques.append(tid)
+    return {"hosts": hosts, "ips": ips, "users": users, "technique_ids": techniques}
+
+
 def mitre_tags_from_evidence(evidence_docs: list[dict]) -> list[dict]:
     """Deduplicated [{tactic, technique}] derived from attached evidence.
 
@@ -147,6 +186,67 @@ MITRE_SUGGESTIONS: dict[str, list[str]] = {
         "Audit recent logon events from the affected host",
     ],
 }
+
+# Static technique → checklist lookup (brief 1.2). Covers the techniques the
+# platform actually emits (see services/mitre.py) plus common AD attacks.
+TECHNIQUE_SUGGESTIONS: dict[str, list[str]] = {
+    "T1110": [
+        "Reset affected account credentials",
+        "Enable/verify account lockout policy",
+        "Check for successful logon following failed attempts",
+    ],
+    "T1078": [
+        "Disable the abused valid account or force re-authentication",
+        "Audit how the account credentials were obtained",
+    ],
+    "T1550": [
+        "Invalidate alternate auth material (tickets/hashes) for the account",
+        "Force password reset and review lateral movement",
+    ],
+    "T1136": [
+        "Remove the unauthorized account",
+        "Audit account creation events on the host",
+    ],
+    "T1098": [
+        "Revert unauthorized account manipulation",
+        "Audit group membership and permission changes",
+    ],
+    "T1070.001": [
+        "Check log forwarding — was this host's log clearing masking other activity?",
+        "Restore logs from central collector if available",
+    ],
+    "T1543.003": [
+        "Review newly created services for persistence",
+        "Verify service binary signatures",
+        "Check service creation event 7045 on the host",
+    ],
+    "T1548.003": [
+        "Review sudoers changes and recent sudo usage",
+        "Verify the invoking user still requires sudo access",
+    ],
+    "T1003": [
+        "Force password resets for potentially dumped credentials (Kerberoasting/DCSync fallout)",
+        "Rotate the KRBTGT account twice to invalidate golden tickets",
+    ],
+    "T1558": [
+        "Force password reset for the AS-REP roastable account",
+        "Enable Kerberos pre-authentication if disabled",
+    ],
+}
+
+
+def technique_suggestions(technique_id: str) -> list[str]:
+    """Checklist items for one technique id (prefix match, e.g. T1070 → T1070.001)."""
+    tid = (technique_id or "").strip().upper()
+    if not tid:
+        return []
+    if tid in TECHNIQUE_SUGGESTIONS:
+        return TECHNIQUE_SUGGESTIONS[tid]
+    for key, items in TECHNIQUE_SUGGESTIONS.items():
+        if key.startswith(tid) or tid.startswith(key):
+            return items
+    return []
+
 
 # Tactics present in the current evidence (deduplicated, order stable).
 def mitigation_suggestions(evidence_docs: list[dict]) -> list[dict]:
