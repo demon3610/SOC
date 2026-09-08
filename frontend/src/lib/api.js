@@ -62,6 +62,8 @@ export const api = {
   projects: {
     list: () => request('/projects'),
     get: (id) => request(`/projects/${id}`),
+    current: () => request('/projects/current'),
+    select: (id) => request(`/projects/${id}/select`, { method: 'POST' }),
     create: (body) =>
       request('/projects', { method: 'POST', body: JSON.stringify(body) }),
     delete: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
@@ -79,12 +81,16 @@ export const api = {
     listApiKeys: (projectId) => request(`/projects/${projectId}/api-keys`),
     revokeApiKey: (keyId) =>
       request(`/api-keys/${keyId}`, { method: 'DELETE' }),
-    integrationSnippet: (projectId, platform = 'website') =>
-      request(`/projects/${projectId}/integration-snippet?platform=${platform}`).then((r) => ({
+    integrationSnippet: (projectId) => {
+      const storedKey = getWebsiteKey(projectId);
+      const headers = storedKey ? { 'X-API-Key': storedKey } : {};
+      return request(`/projects/${projectId}/integration-snippet`, { headers }).then((r) => ({
         snippet: r.snippet,
         script_tag: r.script_tag,
         ai_agent_prompt: r.ai_agent_prompt,
-      })),
+        backend_url: r.backend_url,
+      }));
+    },
     websiteSetupPrompt: (projectId, apiKey) => {
       const headers = apiKey ? { 'X-API-Key': apiKey } : {};
       return request(`/projects/${projectId}/website-setup-prompt`, { headers }).then(
@@ -150,6 +156,24 @@ export const api = {
       request(`/projects/${projectId}/threat/correlation`),
     refresh: (projectId) =>
       request(`/projects/${projectId}/threat/refresh`, { method: 'POST' }),
+    tactics: (projectId, window = '24h') =>
+      request(`/projects/${projectId}/threat-intel/tactics?window=${window}`),
+    timeline: (projectId, window = '24h') =>
+      request(`/projects/${projectId}/threat-intel/timeline?window=${window}`),
+    narratives: (projectId, hours = 24) =>
+      request(`/projects/${projectId}/threat-intel/narratives?hours=${hours}`),
+    topHosts: (projectId, window = '24h') =>
+      request(`/projects/${projectId}/threat-intel/top-hosts?window=${window}`),
+    allIndicators: (projectId, { page = 1, pageSize = 50, sourceFeed = '' } = {}) => {
+      const q = new URLSearchParams({ page, page_size: pageSize });
+      if (sourceFeed) q.set('source_feed', sourceFeed);
+      return request(`/projects/${projectId}/threat-intel/indicators?${q}`);
+    },
+    feedback: (projectId, matchId, isFalsePositive = true) =>
+      request(`/projects/${projectId}/threat-intel/matches/${matchId}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ is_false_positive: isFalsePositive }),
+      }),
   },
   incidents: {
     list: (projectId) => request(`/projects/${projectId}/incidents`),
@@ -161,8 +185,29 @@ export const api = {
     listEvidence: (incidentId) => request(`/incidents/${incidentId}/evidence`),
     addEvidence: (incidentId, body) =>
       request(`/incidents/${incidentId}/evidence`, { method: 'POST', body: JSON.stringify(body) }),
+    attachChain: (incidentId, body) =>
+      request(`/incidents/${incidentId}/evidence/chain`, { method: 'POST', body: JSON.stringify(body) }),
     addNote: (incidentId, body) =>
       request(`/incidents/${incidentId}/notes`, { method: 'POST', body: JSON.stringify(body) }),
+    activity: (incidentId) => request(`/incidents/${incidentId}/activity`),
+    addMitigation: (projectId, incidentId, text) =>
+      request(`/projects/${projectId}/incidents/${incidentId}/mitigation`, {
+        method: 'POST', body: JSON.stringify({ text }),
+      }),
+    toggleMitigation: (projectId, incidentId, itemId, done) =>
+      request(`/projects/${projectId}/incidents/${incidentId}/mitigation/${itemId}`, {
+        method: 'PATCH', body: JSON.stringify({ done }),
+      }),
+    mitigationSuggestions: (projectId, incidentId) =>
+      request(`/projects/${projectId}/incidents/${incidentId}/mitigation/suggestions`),
+    reportPdf: (projectId, incidentId) =>
+      requestFile(`/projects/${projectId}/incidents/${incidentId}/report`, { method: 'POST' }),
+    bulkReports: (projectId, incidentIds) =>
+      requestFile(`/projects/${projectId}/incidents/reports/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ incident_ids: incidentIds }),
+      }),
     exportPdf: (incidentId) => requestFile(`/incidents/${incidentId}/export/pdf`),
   },
   agents: {

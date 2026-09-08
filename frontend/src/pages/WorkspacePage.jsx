@@ -59,9 +59,19 @@ export function WorkspacePage() {
     },
   });
 
-  const openProject = (p) => {
-    setActiveProject(p);
-    navigate(`/projects/${p.id}/overview`);
+  const openProject = async (p) => {
+    // MUST be awaited: navigating before the server commits the new
+    // current_project_id would render the previous project for one frame.
+    try {
+      const project = await api.projects.select(p.id);
+      setActiveProject(project);
+      try {
+        new BroadcastChannel('soc-project').postMessage({ type: 'project-changed' });
+      } catch {}
+      navigate('/overview');
+    } catch (err) {
+      addToast(err.message, 'error');
+    }
   };
 
   return (
@@ -187,8 +197,18 @@ export function WorkspacePage() {
         {showModal && (
           <NewProjectModal
             onClose={() => setShowModal(false)}
-            onCreated={(project) => {
-              setActiveProject(project);
+            onCreated={async (project) => {
+              try {
+                const selected = await api.projects.select(project.id);
+                setActiveProject(selected);
+                try {
+                  new BroadcastChannel('soc-project').postMessage({ type: 'project-changed' });
+                } catch {}
+                navigate('/overview');
+              } catch (err) {
+                addToast(err.message, 'error');
+                setActiveProject(project);
+              }
               refetch();
               setShowModal(false);
             }}

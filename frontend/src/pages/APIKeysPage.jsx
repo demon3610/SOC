@@ -1,16 +1,16 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { Plus } from 'lucide-react';
 import { api } from '../lib/api';
+import { useProjectStore } from '../stores/projectStore';
 import { useToastStore } from '../stores/toastStore';
 import { GenerateKeyModal } from '../components/keys/GenerateKeyModal';
 import { PageHeader } from '../components/ui/PageHeader';
 
 export function APIKeysPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
   const [showModal, setShowModal] = useState(false);
 
   const { data: keys, isLoading: keysLoading, isError: keysError, refetch } = useQuery({

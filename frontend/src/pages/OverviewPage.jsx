@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../lib/api';
@@ -51,10 +51,9 @@ const SEV = {
 };
 
 export function OverviewPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
-  const navigate = useNavigate();
   const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
+  const navigate = useNavigate();
   const [rangeHours, setRangeHours] = useState(24);
   const [liveEvents, setLiveEvents] = useState([]);
   const liveRef = useRef([]);
@@ -77,22 +76,22 @@ export function OverviewPage() {
   const statCards = [
     {
       label: 'Events', value: ov?.events_in_range ?? '—',
-      color: 'text-soc-accent', to: `/projects/${pid}/live-events`,
+      color: 'text-soc-accent', to: `/live-events`,
       sub: `last ${rangeHours}h`,
     },
     {
       label: 'Open Incidents', value: ov?.open_incidents ?? '—',
-      color: 'text-soc-critical', to: `/projects/${pid}/incidents`,
+      color: 'text-soc-critical', to: `/incidents`,
       sub: 'unresolved',
     },
     {
       label: 'Active Alerts', value: ov?.alerts_in_range ?? '—',
-      color: 'text-soc-high', to: `/projects/${pid}/live-events?severity=high`,
+      color: 'text-soc-high', to: `/live-events?severity=high`,
       sub: 'critical + high, last ' + rangeHours + 'h',
     },
     {
       label: 'Ingest Health', value: healthMeta.label,
-      color: healthMeta.cls, to: `/projects/${pid}/live-events`,
+      color: healthMeta.cls, to: `/live-events`,
       sub: healthMeta.detail, dot: healthMeta.dot,
     },
   ];
@@ -143,10 +142,10 @@ export function OverviewPage() {
       {/* Quick actions */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-soc-muted mr-1">Quick actions:</span>
-        <button onClick={() => navigate(`/projects/${pid}/api-keys`)} className="chip">Generate API Key</button>
-        <button onClick={() => navigate(`/projects/${pid}/integrations`)} className="chip">Install Agent</button>
+        <button onClick={() => navigate(`/api-keys`)} className="chip">Generate API Key</button>
+        <button onClick={() => navigate(`/integrations`)} className="chip">Install Agent</button>
         <button onClick={() => setIncidentModal(true)} className="chip">New Incident</button>
-        <Link to={`/projects/${pid}/threat-intel`} className="chip ml-auto">
+        <Link to={`/threat-intel`} className="chip ml-auto">
           View full Threat Intelligence →
         </Link>
       </div>
@@ -210,7 +209,7 @@ export function OverviewPage() {
               {agents.map((a) => (
                 <button
                   key={a.id}
-                  onClick={() => navigate(`/projects/${pid}/live-events?host=${encodeURIComponent(a.hostname || '')}`)}
+                  onClick={() => navigate(`/live-events?host=${encodeURIComponent(a.hostname || '')}`)}
                   className="w-full flex items-center gap-3 p-2.5 rounded-lg bg-soc-card border border-soc-border/60 hover:bg-soc-panel transition-colors text-left"
                 >
                   <AgentDot lastSeenAt={a.last_seen_at} />
@@ -232,7 +231,7 @@ export function OverviewPage() {
             <div className="flex flex-col items-center justify-center py-10 text-soc-muted">
               <span className="text-3xl mb-2">🖥️</span>
               <p className="text-xs">No agents enrolled</p>
-              <button onClick={() => navigate(`/projects/${pid}/integrations`)} className="text-xs text-soc-accent mt-2 hover:underline">
+              <button onClick={() => navigate(`/integrations`)} className="text-xs text-soc-accent mt-2 hover:underline">
                 Install an agent →
               </button>
             </div>
@@ -309,7 +308,7 @@ export function OverviewPage() {
         <div className="glass-card rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-soc-text">Recent Incidents</h2>
-            <Link to={`/projects/${pid}/incidents`} className="text-[10px] text-soc-accent hover:underline">
+            <Link to={`/incidents`} className="text-[10px] text-soc-accent hover:underline">
               view all →
             </Link>
           </div>
@@ -350,7 +349,7 @@ function IncidentList({ pid }) {
       {incidents.slice(0, 5).map((inc) => (
         <button
           key={inc.id}
-          onClick={() => navigate(`/projects/${pid}/incidents/${inc.id}`)}
+          onClick={() => navigate(`/incidents/${inc.id}`)}
           className={`w-full flex items-center justify-between p-2.5 rounded-lg bg-soc-card border border-soc-border/60 hover:bg-soc-panel transition-colors text-left ${SEV[inc.severity] || ''}`}
         >
           <span className="text-sm truncate flex-1 min-w-0">{inc.title}</span>

@@ -70,55 +70,59 @@ def map_entry(obj):
 
 def stream_journal(meta_base):
     """Follow the journal from the persisted cursor, appending to the buffer."""
-    cursor = load_cursor()
-    cmd = ["journalctl", "-o", "json", "-f", "--no-pager"]
-    if cursor:
-        cmd.append("--after-cursor=" + cursor)
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-    except OSError as exc:
-        print(f"[journal_watcher] cannot start journalctl: {exc}", file=sys.stderr)
-        _stop.set()
-        return
-
     while not _stop.is_set():
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
-            continue
-        line = line.strip()
-        if not line:
-            continue
+        cursor = load_cursor()
+        cmd = ["journalctl", "-o", "json", "-f", "--no-pager"]
+        if cursor:
+            cmd.append("--after-cursor=" + cursor)
         try:
-            obj = json.loads(line)
-        except ValueError:
-            # Non-JSON noise on the stream — skip, never abort the feed.
-            continue
-        entry = map_entry(obj)
-        if not entry["cursor"] or not entry["message"]:
-            continue
-        with _lock:
-            _buffer.append(
-                {
-                    "level": "info",
-                    "stage": "event_log",
-                    "message": entry["message"],
-                    "meta": {**meta_base, **entry},
-                }
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
             )
+        except OSError as exc:
+            print(f"[journal_watcher] cannot start journalctl: {exc}", file=sys.stderr)
+            time.sleep(2)
+            continue
 
-    try:
-        proc.terminate()
-    except OSError:
-        pass
+        while not _stop.is_set():
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                # Non-JSON noise on the stream — skip, never abort the feed.
+                continue
+            entry = map_entry(obj)
+            if not entry["cursor"] or not entry["message"]:
+                continue
+            with _lock:
+                _buffer.append(
+                    {
+                        "level": "info",
+                        "stage": "event_log",
+                        "message": entry["message"],
+                        "meta": {**meta_base, **entry},
+                    }
+                )
+
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+        if not _stop.is_set():
+            time.sleep(1)
 
 
 def flush_loop(bulk_url, agent_token):

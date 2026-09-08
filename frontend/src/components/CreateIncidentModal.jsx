@@ -4,23 +4,26 @@ import { api } from '../lib/api';
 
 const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 
-export function CreateIncidentModal({ open, event, projectId, onClose, initialSeverity }) {
-  const [title, setTitle] = useState('');
+export function CreateIncidentModal({ open, event, projectId, onClose, initialSeverity, initialTitle, initialDescription }) {
+  const [title, setTitle] = useState(initialTitle || '');
+  const [description, setDescription] = useState(initialDescription || '');
   const [severity, setSeverity] = useState('medium');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (open) {
       setSeverity(SEVERITIES.includes(initialSeverity) ? initialSeverity : 'medium');
+      if (initialTitle) setTitle(initialTitle);
+      if (initialDescription) setDescription(initialDescription);
     }
-  }, [open, initialSeverity]);
+  }, [open, initialSeverity, initialTitle, initialDescription]);
 
   if (!open) return null;
 
   const handleCreate = async () => {
     setLoading(true);
     try {
-      await api.incidents.create(projectId, { title, severity });
+      await api.incidents.create(projectId, { title, severity, description: description || null });
       onClose();
     } catch {}
     setLoading(false);
@@ -53,6 +56,13 @@ export function CreateIncidentModal({ open, event, projectId, onClose, initialSe
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Incident title"
           className="w-full bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:border-soc-accent"
+        />
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Description (optional)"
+          rows={4}
+          className="w-full bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:border-soc-accent resize-none"
         />
         <div className="flex gap-2 mb-4">
           {SEVERITIES.map((s) => (

@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef, useEffect, memo, useMemo } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { api } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { useProjectStore } from '../stores/projectStore';
 import { formatLocalTime } from '../lib/time';
 import { CreateIncidentModal } from '../components/CreateIncidentModal';
 import { PageHeader } from '../components/ui/PageHeader';
@@ -77,6 +78,7 @@ function enrichedRows(event) {
     if (geo) rows.push(['geo', geo]);
   }
   if (enriched.threat_match) rows.push(['threat_match', 'true']);
+  if (enriched.detected_attacks) rows.push(['detected_attacks', String(enriched.detected_attacks)]);
   if (enriched.risk_score != null) rows.push(['risk_score', String(enriched.risk_score)]);
   if (enriched.user_agent_parsed) rows.push(['user_agent', String(enriched.user_agent_parsed)]);
   if (enriched.form) {
@@ -218,8 +220,8 @@ const EventRow = memo(
 );
 
 export function LiveEventsPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
   const [searchParams, setSearchParams] = useSearchParams();
   const hostParam = searchParams.get('host') || '';
   const severityParam = searchParams.get('severity') || 'all';

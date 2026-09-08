@@ -20,3 +20,4 @@ class UserResponse(BaseModel):
     email: str
     name: str
     created_at: datetime
+    current_project_id: Optional[int] = None

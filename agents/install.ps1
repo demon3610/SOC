@@ -50,7 +50,7 @@ if (-not (Test-Path $agentDir)) {
     New-Item -ItemType Directory -Path $agentDir -Force | Out-Null
 }
 
-# Join log names as a simple comma-separated string — will be split inside the agent script
+# Join log names as a simple comma-separated string - will be split inside the agent script
 $logNamesStr = $EventLogs -join ","
 
 $config = @{
@@ -64,7 +64,7 @@ $config = @{
 
 Set-Content -Path "$agentDir\config.json" -Value $config -Encoding UTF8
 
-# ── Write the agent runtime script ──
+# -- Write the agent runtime script --
 $agentScript = @"
 `$ErrorActionPreference = "Continue"
 
@@ -140,7 +140,7 @@ function Save-Cursors {
     `$snap | ConvertTo-Json | Set-Content -Path `$cursorPath -Encoding UTF8
 }
 
-# ── Initial catch-up: send recent events since last cursor ──
+# -- Initial catch-up: send recent events since last cursor --
 foreach (`$logn in `$logNames) {
     `$lastId = if (`$cursors.ContainsKey(`$logn)) { [long]`$cursors[`$logn] } else { 0 }
     `$events = try {
@@ -172,12 +172,14 @@ if (`$batch.Count -gt 0) {
     if (Send-Bulk -body `$bodyJson) { Save-Cursors }
 }
 
-# ── Flush timer ──
+# -- Flush timer --
 `$flushTimer = New-Object System.Timers.Timer(`$config.flush_interval_seconds * 1000)
 `$flushTimer.AutoReset = `$true
-Register-ObjectEvent `$flushTimer "Elapsed" -Action {
+Register-ObjectEvent `$flushTimer "Elapsed" -MessageData @{ queue = `$queue } -Action {
+    `$md = `$Event.MessageData
+    `$q = if (`$md -and `$md.queue) { `$md.queue } else { `$queue }
     `$batch = @(); `$item = `$null
-    while (`$queue.TryDequeue([ref]`$item)) { `$batch += `$item }
+    while (`$q.TryDequeue([ref]`$item)) { `$batch += `$item }
     if (`$batch.Count -eq 0) { return }
     `$bodyJson = @{ entries = `$batch } | ConvertTo-Json -Depth 10
     if (Send-Bulk -body `$bodyJson) { Save-Cursors }
@@ -185,7 +187,7 @@ Register-ObjectEvent `$flushTimer "Elapsed" -Action {
 `$flushTimer.Start()
 Write-Host "[SOCAgent] Flush timer active."
 
-# ── Heartbeat timer ──
+# -- Heartbeat timer --
 `$heartbeatTimer = New-Object System.Timers.Timer(`$config.heartbeat_interval_seconds * 1000)
 `$heartbeatTimer.AutoReset = `$true
 Register-ObjectEvent `$heartbeatTimer "Elapsed" -Action {
@@ -201,7 +203,7 @@ Register-ObjectEvent `$heartbeatTimer "Elapsed" -Action {
 `$heartbeatTimer.Start()
 Write-Host "[SOCAgent] Heartbeat timer active."
 
-# ── Poll timer: check for new events every 2 seconds ──
+# -- Poll timer: check for new events every 2 seconds --
 `$pollTimer = New-Object System.Timers.Timer(2000)
 `$pollTimer.AutoReset = `$true
 Register-ObjectEvent `$pollTimer "Elapsed" -MessageData @{ logNames = `$logNames; queue = `$queue; cursors = `$cursors } -Action {
@@ -232,7 +234,7 @@ Register-ObjectEvent `$pollTimer "Elapsed" -MessageData @{ logNames = `$logNames
 `$pollTimer.Start()
 Write-Host "[SOCAgent] Poll timer active."
 
-# ── Activity monitoring: process starts, USB devices, active window ──
+# -- Activity monitoring: process starts, USB devices, active window --
 `$excludedProcesses = @("svchost.exe","conhost.exe","dllhost.exe","RuntimeBroker.exe","backgroundTaskHost.exe","SearchIndexer.exe","SearchFilterHost.exe","fontdrvhost.exe","sihost.exe","taskhostw.exe","dwm.exe","explorer.exe","ctfmon.exe","StartMenuExperienceHost.exe","ShellExperienceHost.exe","TextInputHost.exe")
 
 try {

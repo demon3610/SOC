@@ -77,16 +77,16 @@ cat > /etc/soc-agent/config.json <<EOF
 }
 EOF
 
-# ── Remove the legacy bash agent (heartbeat + journalctl loops) ──
+# -- Remove the legacy bash agent (heartbeat + journalctl loops) --
 systemctl disable --now soc-agent.service 2>/dev/null || true
 rm -f /etc/systemd/system/soc-agent.service /etc/soc-agent/agent.sh
 
-# ── Carry the acknowledged cursor across the upgrade so nothing is resent ──
+# -- Carry the acknowledged cursor across the upgrade so nothing is resent --
 if [[ -f /etc/soc-agent/cursor ]] && [[ ! -f /etc/soc-agent/journal_cursor ]]; then
     mv /etc/soc-agent/cursor /etc/soc-agent/journal_cursor
 fi
 
-# ── Install the Python journal watcher ──
+# -- Install the Python journal watcher --
 echo "Downloading journal watcher..."
 curl -fsSL "$API_BASE/agents/journal_watcher.py" -o /opt/soc-agent/journal_watcher.py
 chmod +x /opt/soc-agent/journal_watcher.py
@@ -97,7 +97,7 @@ if ! python3 -c "import requests" 2>/dev/null; then
         || python3 -m pip install requests
 fi
 
-# ── Enable process-execution auditing (auditd) ──
+# -- Enable process-execution auditing (auditd) --
 # Every command executed by a real user session is recorded as an execve
 # audit record; the journal watcher tails /var/log/audit/audit.log for them.
 if ! command -v auditctl &> /dev/null; then
@@ -115,7 +115,7 @@ EOF
     systemctl restart auditd 2>/dev/null || true
 fi
 
-# ── Register the journal watcher service ──
+# -- Register the journal watcher service --
 if command -v systemctl &> /dev/null; then
     cat > /etc/systemd/system/soc-agent-journal.service <<EOF
 [Unit]
@@ -137,7 +137,7 @@ EOF
 
     systemctl daemon-reload && systemctl enable --now soc-agent-journal.service
 else
-    echo "Warning: systemctl not found — start manually:"
+    echo "Warning: systemctl not found - start manually:"
     echo "  python3 /opt/soc-agent/journal_watcher.py $API_BASE $AGENT_TOKEN"
 fi
 

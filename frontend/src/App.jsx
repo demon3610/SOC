@@ -52,15 +52,15 @@ function AppRoutes() {
       <Route path="/workspace" element={<ProtectedRoute>{shell(<WorkspacePage />)}</ProtectedRoute>} />
       <Route path="/help" element={<ProtectedRoute>{shell(<HelpPage />)}</ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute>{shell(<SettingsPage />)}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/overview" element={<ProtectedRoute>{shell(project(<OverviewPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/live-events" element={<ProtectedRoute>{shell(project(<LiveEventsPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/threat-intel" element={<ProtectedRoute>{shell(project(<ThreatIntelPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/incidents" element={<ProtectedRoute>{shell(project(<IncidentsPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/incidents/:incidentId" element={<ProtectedRoute>{shell(project(<IncidentDetailPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/api-keys" element={<ProtectedRoute>{shell(project(<APIKeysPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/integrations" element={<ProtectedRoute>{shell(project(<IntegrationsPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/website-setup" element={<ProtectedRoute>{shell(project(<WebsiteSetupPage />))}</ProtectedRoute>} />
-      <Route path="/projects/:projectId/data-cleanup" element={<ProtectedRoute>{shell(project(<DataCleanupPage />))}</ProtectedRoute>} />
+      <Route path="/overview" element={<ProtectedRoute>{shell(project(<OverviewPage />))}</ProtectedRoute>} />
+      <Route path="/live-events" element={<ProtectedRoute>{shell(project(<LiveEventsPage />))}</ProtectedRoute>} />
+      <Route path="/threat-intel" element={<ProtectedRoute>{shell(project(<ThreatIntelPage />))}</ProtectedRoute>} />
+      <Route path="/incidents" element={<ProtectedRoute>{shell(project(<IncidentsPage />))}</ProtectedRoute>} />
+      <Route path="/incidents/:incidentId" element={<ProtectedRoute>{shell(project(<IncidentDetailPage />))}</ProtectedRoute>} />
+      <Route path="/api-keys" element={<ProtectedRoute>{shell(project(<APIKeysPage />))}</ProtectedRoute>} />
+      <Route path="/integrations" element={<ProtectedRoute>{shell(project(<IntegrationsPage />))}</ProtectedRoute>} />
+      <Route path="/website-setup" element={<ProtectedRoute>{shell(project(<WebsiteSetupPage />))}</ProtectedRoute>} />
+      <Route path="/data-cleanup" element={<ProtectedRoute>{shell(project(<DataCleanupPage />))}</ProtectedRoute>} />
       <Route path="/" element={user ? <Navigate to="/workspace" replace /> : <Navigate to="/login" replace />} />
       <Route path="*" element={user ? <Navigate to="/workspace" replace /> : <Navigate to="/login" replace />} />
     </Routes>

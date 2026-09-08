@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle, ArrowLeft, Database, FileClock,
@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useToastStore } from '../stores/toastStore';
+import { useProjectStore } from '../stores/projectStore';
 import { formatLocalDate, formatLocalTime } from '../lib/time';
 import { PageHeader } from '../components/ui/PageHeader';
 
@@ -102,8 +103,8 @@ function CleanupPreviewList({ preview, scope, isPreviewing }) {
 }
 
 export function DataCleanupPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
 
@@ -226,7 +227,7 @@ export function DataCleanupPage() {
         title="Data Cleanup"
         right={
           <Link
-            to={`/projects/${pid}/live-events`}
+            to={`/live-events`}
             className="flex items-center gap-1.5 text-xs text-soc-muted hover:text-soc-accent bg-white border border-soc-border hover:bg-soc-panel px-3 py-1.5 rounded-lg transition-colors"
           >
             <ArrowLeft size={14} /> Back to Live Events

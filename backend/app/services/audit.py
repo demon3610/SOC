@@ -53,3 +53,60 @@ def list_cleanups(db, project_id: int, limit: int = 50, offset: int = 0) -> tupl
             "executed_at": ts.isoformat() if isinstance(ts, datetime) else str(ts),
         })
     return rows, total
+
+
+def log_incident_action(db, user, project_id: int, incident_id: int,
+                        action: str, detail: str) -> dict:
+    """Append one immutable entry to the incident activity log.
+
+    Lives in the same write-only ``audit_log`` collection as cleanups (the
+    product has no delete/edit endpoint for these rows); entries are tagged
+    ``entity_type: "incident"`` so the two audit streams never collide.
+    """
+    row = {
+        "id": get_next_id(AUDIT_LOG_COLLECTION),
+        "entity_type": "incident",
+        "incident_id": incident_id,
+        "project_id": project_id,
+        "user_id": user["id"],
+        "username": user.get("name") or user.get("email") or user.get("username") or "",
+        "action": action,
+        "detail": detail,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    db.audit_log.insert_one(row)
+    return row
+
+
+def list_incident_activity(db, incident_id: int) -> list[dict]:
+    """Chronological activity for one incident, authors resolved by user id.
+
+    The username snapshot written at log time is used when the user record
+    no longer exists (e.g. account deleted); live join wins otherwise.
+    """
+    users = {u["id"]: u for u in db.users.find({}, NO_ID)}
+    docs = list(
+        db.audit_log.find({"entity_type": "incident", "incident_id": incident_id}, NO_ID)
+        .sort("timestamp", 1)
+    )
+    rows = []
+    for d in docs:
+        uid = d.get("user_id")
+        user = users.get(uid)
+        name = ""
+        if user:
+            name = user.get("name") or user.get("email") or ""
+        if not name:
+            name = d.get("username", "")
+        if not name:
+            name = f"User #{uid}"
+        ts = d.get("timestamp")
+        rows.append({
+            "id": d.get("id"),
+            "user_id": uid,
+            "user_name": name,
+            "action": d.get("action"),
+            "detail": d.get("detail", ""),
+            "timestamp": ts.isoformat() if isinstance(ts, datetime) else str(ts),
+        })
+    return rows

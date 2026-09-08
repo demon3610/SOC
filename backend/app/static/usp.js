@@ -4,7 +4,7 @@
   var script = document.currentScript;
   if (!script) return;
   var key = script.getAttribute("data-soc-key");
-  var host = script.getAttribute("data-soc-host") || window.location.origin;
+  var host = (script.getAttribute("data-soc-host") || window.location.origin).replace(/\/+$/, "");
   if (!key) return;
 
   var user = null;

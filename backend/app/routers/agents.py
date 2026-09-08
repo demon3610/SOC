@@ -27,6 +27,7 @@ from app.services.threat_feed import is_malicious
 from app.services.event_filter import is_relevant_entry
 from app.services.severity import classify_severity
 from app.services.risk_engine import compute_risk_score
+from app.services.mitre import get_mitre
 from app.services.audit import record_cleanup
 from app.ws_manager import broadcast
 from app.config import PUBLIC_BACKEND_URL
@@ -129,7 +130,7 @@ def _entry_category(stage: str, is_security: bool) -> str:
 def serve_usp_js():
     if not os.path.exists(_usp_js_path):
         raise HTTPException(status_code=404, detail="usp.js not found")
-    with open(_usp_js_path, "r") as f:
+    with open(_usp_js_path, "r", encoding="utf-8") as f:
         content = f.read()
     return Response(content=content, media_type="application/javascript")
 
@@ -143,16 +144,17 @@ def delete_all_agent_keys(user=Depends(get_current_user), db=Depends(get_db)):
 @router.delete("/keys/{key_id}", summary="Revoke an agent key")
 def revoke_agent_key(key_id: int, user=Depends(get_current_user), db=Depends(get_db)):
     key = db.agent_keys.find_one({"id": key_id}, NO_ID)
-    if not key:
+    if not key or key["created_by"] != user["id"]:
         raise HTTPException(status_code=404, detail="Key not found")
-    if key["created_by"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Not allowed")
     db.agent_keys.update_one({"id": key_id}, {"$set": {"status": "revoked", "revoked_at": datetime.now(timezone.utc)}})
     return {"message": "Key revoked"}
 
 
 @router.post("/keys", summary="Create an agent key (one-time reveal)")
 def create_agent_key(body: AgentKeyCreate, user=Depends(get_current_user), db=Depends(get_db)):
+    project = db.projects.find_one({"id": body.project_id, "owner_id": user["id"]}, {"id": 1})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
     raw = generate_raw_key()
     prefix = raw[:12]
     hashed = hash_raw_key(raw)
@@ -349,12 +351,16 @@ async def agent_log(body: AgentLogEntry, request: Request, agent=Depends(get_cur
         parsed.get("action"),
         parsed,
     )
-
     meta = {**body.meta, "trace_id": trace_id} if body.meta else {"trace_id": trace_id}
     doc = _build_agent_doc(
         agent, source, category, event_type, summary, parsed, enriched,
         body.message, meta, trace_id, now.isoformat(), level=body.level,
         stage=body.stage,
+    )
+    doc["mitre"] = get_mitre(
+        (body.meta or {}).get("log_name", "") or parsed.get("log_name", ""),
+        (body.meta or {}).get("event_id", "") or parsed.get("event_id", ""),
+        parsed.get("action"),
     )
 
     # Risk score is computed against the EXISTING documents (burst windows must
@@ -414,6 +420,11 @@ async def agent_log_bulk(body: AgentLogBulk, request: Request, agent=Depends(get
         doc = _build_agent_doc(
             agent, source, category, event_type, summary, parsed, enriched,
             entry.message, meta, trace_id, ts, level=entry.level, stage=entry.stage,
+        )
+        doc["mitre"] = get_mitre(
+            (entry.meta or {}).get("log_name", "") or parsed.get("log_name", ""),
+            (entry.meta or {}).get("event_id", "") or parsed.get("event_id", ""),
+            parsed.get("action"),
         )
         if is_security:
             doc["enriched"]["risk_score"] = compute_risk_score(doc, db)

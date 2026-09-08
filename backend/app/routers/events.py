@@ -11,12 +11,6 @@ from app.services.audit import record_cleanup, list_cleanups
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-def _check_project(project_id: int, user, db):
-    project = db.projects.find_one({"id": project_id}, NO_ID)
-    if not project or project["owner_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-
 def _event_to_dict(e: dict) -> dict:
     ts = e.get("timestamp")
     return {
@@ -51,7 +45,6 @@ def _base_mongo_q(project_id: int, event_type: str | None, severity: str | None,
 
 @router.get("/projects/{project_id}/events")
 def list_events(
-    project_id: int,
     query: str = Query(None),
     severity: str = Query(None),
     source: str = Query(None, description="Filter to one source: website | windows | linux | all"),
@@ -61,7 +54,7 @@ def list_events(
     time_to: str = Query(None),
     size: int = Query(50),
     offset: int = Query(0),
-    user=Depends(get_current_user),
+    project=Depends(get_owned_project),
     db=Depends(get_db),
 ):
     """List events for a project.
@@ -71,7 +64,7 @@ def list_events(
     three collections are merged into one time-sorted feed (Elasticsearch
     first, MongoDB as fallback) so the Live Events view stays unified.
     """
-    _check_project(project_id, user, db)
+    project_id = project["id"]
 
     if source == "all":
         source = None
@@ -283,14 +276,14 @@ def get_event(event_id: str, user=Depends(get_current_user), db=Depends(get_db))
         e = col.find_one({"id": event_id}, NO_ID)
         if e:
             try:
-                _check_project(int(e.get("project_id")), user, db)
+                get_owned_project(int(e.get("project_id")), user, db)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=404, detail="Event not found")
             return e
     event = get_event_by_id(event_id)
     if event:
         try:
-            _check_project(int(event.get("project_id")), user, db)
+            get_owned_project(int(event.get("project_id")), user, db)
         except (TypeError, ValueError):
             raise HTTPException(status_code=404, detail="Event not found")
         return event

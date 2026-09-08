@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeft, ChevronDown, Download, Plus } from 'lucide-react';
+import { ArrowLeft, ChevronDown, Link2, Plus } from 'lucide-react';
 import { api } from '../lib/api';
 import { formatLocalDate, formatLocalTime } from '../lib/time';
 import { PageHeader } from '../components/ui/PageHeader';
+import { useProjectStore } from '../stores/projectStore';
 
 function parseSnapshot(ev) {
   try {
@@ -20,6 +21,10 @@ function evOs(snap) {
   const map = { windows: 'Windows', linux: 'Linux', website: 'Web' };
   const source = snap?.source;
   return map[source] || source || null;
+}
+
+function evHostname(snap) {
+  return snap?.hostname || snap?.raw?.hostname || null;
 }
 
 function evIp(snap) {
@@ -68,6 +73,16 @@ function Chip({ label, className }) {
     </span>
   );
 }
+
+const ACTION_LABEL = {
+  created: 'created incident',
+  status_changed: 'changed status',
+  severity_changed: 'changed severity',
+  note_added: 'added note',
+  evidence_attached: 'attached evidence',
+  mitigation_added: 'added mitigation item',
+  mitigation_toggled: 'toggled mitigation item',
+};
 
 function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) {
   const [search, setSearch] = useState('');
@@ -162,7 +177,7 @@ function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) 
                 <span className={`mt-0.5 w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] ${
                   selected.has(ev.id) ? 'bg-soc-accent border-soc-accent text-white' : 'border-soc-border'
                 }`}>
-                  {selected.has(ev.id) ? '✓' : ''}
+                  {selected.has(ev.id) ? '✔' : ''}
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center gap-2 mb-0.5">
@@ -200,16 +215,115 @@ function EvidencePickerModal({ open, projectId, incidentId, onClose, onAdded }) 
   );
 }
 
+function ChainPickerModal({ open, projectId, incidentId, evidence, onClose, onAttached }) {
+  const [attaching, setAttaching] = useState(null);
+  const queryClient = useQueryClient();
+
+  const { data } = useQuery({
+    queryKey: ['chain-picker', projectId],
+    queryFn: () => api.threatIntel.narratives(projectId, 72),
+    enabled: open && !!projectId,
+  });
+
+  if (!open) return null;
+  const all = data?.narratives || [];
+  const evidenceHosts = new Set(
+    (evidence || []).map((ev) => evHostname(parseSnapshot(ev))).filter(Boolean)
+  );
+  const narratives = evidenceHosts.size
+    ? all.filter((n) => evidenceHosts.has(n.hostname))
+    : all;
+
+  const attach = async (n) => {
+    setAttaching(n.hostname);
+    try {
+      await api.incidents.attachChain(incidentId, {
+        hostname: n.hostname,
+        start_time: n.start_time,
+        end_time: n.end_time,
+      });
+      queryClient.invalidateQueries({ queryKey: ['evidence', incidentId] });
+      queryClient.invalidateQueries({ queryKey: ['incident', incidentId] });
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', incidentId] });
+      onAttached?.();
+      onClose();
+    } finally {
+      setAttaching(null);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-soc-overlay/60 p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95 }}
+        animate={{ scale: 1 }}
+        className="glass-elevated rounded-xl w-full max-w-xl max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-soc-border">
+          <h2 className="text-lg font-semibold text-soc-text">Attach a correlated chain</h2>
+          <p className="text-xs text-soc-muted mt-0.5">
+            {evidenceHosts.size
+              ? `Recent Attack Narratives matching this incident's evidence (${[...evidenceHosts].join(', ')})`
+              : 'Recent Attack Narratives for this project'}
+          </p>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-2">
+          {narratives.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-soc-muted">
+              <span className="text-3xl mb-2">🔗</span>
+              <p className="text-xs">No correlated chains found in the last 72h</p>
+            </div>
+          ) : (
+            narratives.map((n) => (
+              <div key={`${n.hostname}-${n.start_time}`} className="bg-soc-card border border-soc-border/60 rounded-lg px-3 py-2.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-xs font-semibold text-soc-text">{n.hostname}</span>
+                  <span className="text-[10px] text-soc-muted">
+                    {formatLocalDate(n.start_time)} {formatLocalTime(n.start_time)} → {formatLocalTime(n.end_time)} · {n.event_count} events
+                  </span>
+                  <span className="text-[10px] text-soc-muted/70">
+                    {[...new Set(n.chain.map((s) => s.tactic).filter(Boolean))].slice(0, 3).join(', ') || 'no tactics'}
+                  </span>
+                  <button
+                    onClick={() => attach(n)}
+                    disabled={attaching !== null}
+                    className="ml-auto text-xs bg-soc-accent hover:bg-soc-accent-glow text-white px-2.5 py-1 rounded disabled:opacity-50"
+                  >
+                    {attaching === n.hostname ? 'Attaching…' : 'Attach chain'}
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="p-3 border-t border-soc-border flex justify-end">
+          <button onClick={onClose} className="text-sm text-soc-muted">Close</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 export function IncidentDetailPage() {
-  const { incidentId, projectId } = useParams();
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
+  const { incidentId } = useParams();
   const iid = Number(incidentId);
-  const pid = Number(projectId);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [note, setNote] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [chainPickerOpen, setChainPickerOpen] = useState(false);
   const [savedFlash, setSavedFlash] = useState('');
   const [openRaw, setOpenRaw] = useState({});
-  const [downloading, setDownloading] = useState(false);
+  const [newMitigation, setNewMitigation] = useState('');
 
   const { data: incident, refetch } = useQuery({
     queryKey: ['incident', iid],
@@ -223,11 +337,42 @@ export function IncidentDetailPage() {
     enabled: !!iid,
   });
 
+  const { data: activity } = useQuery({
+    queryKey: ['incident-activity', iid],
+    queryFn: () => api.incidents.activity(iid),
+    enabled: !!iid,
+    refetchInterval: 30000,
+  });
+
+  const { data: suggestions } = useQuery({
+    queryKey: ['mitigation-suggestions', pid, iid],
+    queryFn: () => api.incidents.mitigationSuggestions(pid, iid),
+    enabled: !!pid && !!iid,
+  });
+
   const addNoteMutation = useMutation({
     mutationFn: (text) => api.incidents.addNote(iid, { text }),
     onSuccess: () => {
       setNote('');
       refetch();
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
+    },
+  });
+
+  const addMitigationMutation = useMutation({
+    mutationFn: (text) => api.incidents.addMitigation(pid, iid, text),
+    onSuccess: () => {
+      setNewMitigation('');
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
+    },
+  });
+
+  const toggleMitigationMutation = useMutation({
+    mutationFn: ({ itemId, done }) => api.incidents.toggleMitigation(pid, iid, itemId, done),
+    onSuccess: () => {
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
     },
   });
 
@@ -235,32 +380,13 @@ export function IncidentDetailPage() {
     setSavedFlash('Saving…');
     try {
       await api.incidents.update(iid, { [field]: value });
-      setSavedFlash('Saved ✓');
+      setSavedFlash('Saved ✔');
       refetch();
+      queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
     } catch {
       setSavedFlash('Save failed');
     }
     setTimeout(() => setSavedFlash(''), 2500);
-  };
-
-  const handleDownloadPdf = async () => {
-    setDownloading(true);
-    try {
-      const blob = await api.incidents.exportPdf(iid);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `incident-${iid}-report.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      setSavedFlash('PDF export failed');
-      setTimeout(() => setSavedFlash(''), 2500);
-    } finally {
-      setDownloading(false);
-    }
   };
 
   if (!incident) return null;
@@ -270,13 +396,21 @@ export function IncidentDetailPage() {
     { label: `Status: ${incident.status}`, className: statusBadgeClass(incident.status) },
     incident.risk_score != null && { label: `Risk Score: ${incident.risk_score}`, className: riskBadgeClass(incident.risk_score) },
     ...(incident.os_types || []).map((os) => ({ label: `OS: ${os}`, className: 'bg-soc-panel text-soc-muted' })),
-    ...(incident.affected_ips?.length ? incident.affected_ips.map((ip) => ({ label: `IP: ${ip}`, className: 'bg-soc-tint-neutral text-slate-600' })) : [{ label: 'IP: Not captured', className: 'bg-soc-panel text-soc-muted' }]),
+    incident.primary_ip
+      ? { label: `IP: ${incident.primary_ip}`, className: 'bg-soc-tint-neutral text-slate-600' }
+      : { label: 'IP: Not captured', className: 'bg-soc-panel text-soc-muted' },
+    ...(incident.mitre_tags || []).map((tag) => ({
+      label: `${tag.tactic}${tag.technique ? ` · ${tag.technique}` : ''}`,
+      className: 'bg-soc-accent/10 text-soc-accent border-soc-accent/30',
+    })),
   ].filter(Boolean);
+
+  const mitigation = incident.mitigation || [];
 
   return (
     <div>
       <button
-        onClick={() => navigate(`/projects/${pid}/incidents`)}
+        onClick={() => navigate(`/incidents`)}
         className="flex items-center gap-1.5 text-xs text-soc-muted hover:text-soc-accent mb-4 transition-colors"
       >
         <ArrowLeft size={13} />
@@ -312,14 +446,6 @@ export function IncidentDetailPage() {
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
-            <button
-              onClick={handleDownloadPdf}
-              disabled={downloading}
-              className="flex items-center gap-1.5 text-xs bg-soc-accent hover:bg-soc-accent-glow text-white px-3 py-1.5 rounded-lg disabled:opacity-50 whitespace-nowrap"
-            >
-              <Download size={13} />
-              {downloading ? 'Preparing…' : 'Download PDF Report'}
-            </button>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
@@ -340,13 +466,22 @@ export function IncidentDetailPage() {
 
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold text-soc-text">Evidence Timeline</h2>
-        <button
-          onClick={() => setPickerOpen(true)}
-          className="flex items-center gap-1.5 text-xs bg-soc-accent hover:bg-soc-accent-glow text-white px-3 py-1.5 rounded-lg"
-        >
-          <Plus size={13} />
-          Add Evidence from Live Events
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setChainPickerOpen(true)}
+            className="flex items-center gap-1.5 text-xs bg-soc-card border border-soc-border/70 hover:border-soc-accent/50 text-soc-text px-3 py-1.5 rounded-lg transition-colors"
+          >
+            <Link2 size={13} />
+            Attach a correlated chain
+          </button>
+          <button
+            onClick={() => setPickerOpen(true)}
+            className="flex items-center gap-1.5 text-xs bg-soc-accent hover:bg-soc-accent-glow text-white px-3 py-1.5 rounded-lg"
+          >
+            <Plus size={13} />
+            Add Evidence from Live Events
+          </button>
+        </div>
       </div>
       {evidence && evidence.length > 0 ? (
         <div className="space-y-2 mb-6">
@@ -354,8 +489,10 @@ export function IncidentDetailPage() {
             const snapshot = parseSnapshot(ev);
             const summary = snapshot?.summary || snapshot?.raw?.message || '';
             const os = evOs(snapshot);
+            const host = evHostname(snapshot);
             const ip = evIp(snapshot);
             const risk = evRisk(snapshot);
+            const mitre = snapshot?.mitre;
             return (
               <div key={ev.id} className="glass-card rounded-xl p-4">
                 <div className="flex flex-wrap items-center gap-1.5 mb-2 text-[10px]">
@@ -367,11 +504,17 @@ export function IncidentDetailPage() {
                       'bg-soc-panel text-soc-muted'
                     }`}>{snapshot.event_type}</span>
                   )}
+                  {host && <span className="px-1.5 py-0.5 rounded bg-soc-panel text-soc-muted font-mono">{host}</span>}
                   {os && <span className="px-1.5 py-0.5 rounded bg-soc-panel text-soc-muted">OS: {os}</span>}
                   {ip
                     ? <span className="px-1.5 py-0.5 rounded bg-soc-tint-neutral text-slate-600">IP: {ip}</span>
                     : <span className="px-1.5 py-0.5 rounded bg-soc-panel text-soc-muted">IP: Not captured</span>}
                   <span className={`px-1.5 py-0.5 rounded font-semibold ${riskBadgeClass(risk)}`}>Risk: {risk}</span>
+                  {mitre?.tactic && (
+                    <span className="px-1.5 py-0.5 rounded bg-soc-accent/10 text-soc-accent border border-soc-accent/30">
+                      {mitre.tactic}{mitre.technique ? ` · ${mitre.technique}` : ''}
+                    </span>
+                  )}
                   {snapshot?.enriched?.form?.name && (
                     <span className="px-1.5 py-0.5 rounded bg-soc-tint-steel text-blue-700">
                       Form: {snapshot.enriched.form.name}
@@ -406,18 +549,79 @@ export function IncidentDetailPage() {
         </div>
       )}
 
-      <h2 className="text-lg font-semibold mb-3 text-soc-text">Mitigation</h2>
+      <h2 className="text-lg font-semibold mb-3 text-soc-text">Mitigation Checklist</h2>
       <div className="glass-card rounded-xl p-4 mb-6">
-        <textarea
-          defaultValue={incident.mitigation || ''}
-          onBlur={(e) => handleUpdate('mitigation', e.target.value)}
-          placeholder="No mitigation recorded yet."
-          className="w-full bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-soc-accent min-h-[60px]"
-        />
+        {mitigation.length > 0 ? (
+          <ul className="space-y-1.5 mb-3">
+            {mitigation.map((item) => (
+              <li key={item.id} className="flex items-start gap-2.5 bg-soc-card border border-soc-border/60 rounded-lg px-3 py-2">
+                <button
+                  onClick={() => toggleMitigationMutation.mutate({ itemId: item.id, done: !item.done })}
+                  className={`mt-0.5 w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] transition-colors ${
+                    item.done ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-700' : 'border-soc-border bg-white hover:border-soc-accent/50'
+                  }`}
+                >
+                  {item.done ? '✔' : ''}
+                </button>
+                <span className="flex-1 min-w-0">
+                  <span className={`block text-sm ${item.done ? 'line-through text-soc-muted' : 'text-soc-text'}`}>
+                    {item.text}
+                  </span>
+                  {item.done && (
+                    <span className="text-[10px] text-soc-muted">
+                      completed by {item.completed_by_name || `User #${item.completed_by}`} at {formatLocalDate(item.completed_at)}
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-soc-muted mb-3">No mitigation items yet — add one below or pick a suggestion.</p>
+        )}
+        {suggestions?.suggestions?.length > 0 && (
+          <div className="mb-3">
+            {suggestions.suggestions.map((s) => (
+              <div key={s.tactic} className="mb-1.5">
+                <span className="text-[10px] font-semibold text-soc-accent">{s.tactic}</span>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {s.items.map((text) => (
+                    <button
+                      key={text}
+                      onClick={() => addMitigationMutation.mutate(text)}
+                      disabled={addMitigationMutation.isPending}
+                      className="text-[11px] border border-dashed border-soc-accent/40 text-soc-accent hover:bg-soc-accent/10 rounded-full px-2.5 py-0.5 transition-colors disabled:opacity-50"
+                    >
+                      + {text}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input
+            value={newMitigation}
+            onChange={(e) => setNewMitigation(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && newMitigation.trim()) addMitigationMutation.mutate(newMitigation.trim());
+            }}
+            placeholder="Add a mitigation item…"
+            className="flex-1 bg-soc-card border border-soc-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-soc-accent"
+          />
+          <button
+            onClick={() => addMitigationMutation.mutate(newMitigation.trim())}
+            disabled={!newMitigation.trim() || addMitigationMutation.isPending}
+            className="bg-soc-accent hover:bg-soc-accent-glow text-white px-3 py-1.5 rounded text-xs disabled:opacity-50"
+          >
+            {addMitigationMutation.isPending ? 'Adding…' : 'Add item'}
+          </button>
+        </div>
       </div>
 
       <h2 className="text-lg font-semibold mb-3 text-soc-text">Notes</h2>
-      <div className="glass-card rounded-xl p-4">
+      <div className="glass-card rounded-xl p-4 mb-6">
         {incident.notes && incident.notes.length > 0 && (
           <ul className="space-y-2 mb-3">
             {incident.notes.map((n) => (
@@ -443,12 +647,51 @@ export function IncidentDetailPage() {
         </button>
       </div>
 
+      <h2 className="text-lg font-semibold mb-3 text-soc-text">Activity Log</h2>
+      <div className="glass-card rounded-xl p-4">
+        {activity && activity.length > 0 ? (
+          <ul className="space-y-2">
+            {activity.map((a) => (
+              <li key={a.id} className="flex items-start justify-between gap-3 text-sm">
+                <span className="text-soc-text">
+                  <span className="font-medium">{a.user_name}</span>{' '}
+                  <span className="text-soc-muted">
+                    {ACTION_LABEL[a.action] || a.action}: {a.detail}
+                  </span>
+                </span>
+                <span className="text-[10px] text-soc-muted shrink-0 pt-1">
+                  {formatLocalDate(a.timestamp)} {formatLocalTime(a.timestamp)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-soc-muted">No activity recorded yet.</p>
+        )}
+      </div>
+
       <EvidencePickerModal
         open={pickerOpen}
         projectId={pid}
         incidentId={iid}
         onClose={() => setPickerOpen(false)}
-        onAdded={() => refetchEvidence()}
+        onAdded={() => {
+          refetchEvidence();
+          refetch();
+          queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
+        }}
+      />
+      <ChainPickerModal
+        open={chainPickerOpen}
+        projectId={pid}
+        incidentId={iid}
+        evidence={evidence || []}
+        onClose={() => setChainPickerOpen(false)}
+        onAttached={() => {
+          refetchEvidence();
+          refetch();
+          queryClient.invalidateQueries({ queryKey: ['incident-activity', iid] });
+        }}
       />
     </div>
   );

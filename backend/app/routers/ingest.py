@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from app.database import get_db, get_next_id, NO_ID, strip_mongo_id, get_events_
 from app.services.elastic import index_events_bulk
 from app.services.geoip import lookup as geoip_lookup
 from app.services.threat_feed import is_malicious
+from app.services.rules import classify_event
 from app.ws_manager import broadcast
 from app.config import TRUSTED_PROXY_IPS
 
@@ -77,8 +79,21 @@ def _website_summary(event_type: str, raw: dict, user: dict | None, page: dict |
     if t == "input":
         return f"Input{who}: {_cap(raw.get('field', '?'), 60)} ({raw.get('length', 0)} chars)"
     if t == "form_submit":
-        form = (raw.get("form") or {}).get("id") or (raw.get("form") or {}).get("name") or (raw.get("form") or {}).get("action") or "form"
-        return f"Form submitted{who}: {_cap(form, 120)} ({len(raw.get('fields') or [])} fields)"
+        form_raw = raw.get("form")
+        if isinstance(form_raw, dict):
+            form = form_raw.get("id") or form_raw.get("name") or form_raw.get("action") or "form"
+        elif isinstance(form_raw, str) and form_raw:
+            form = form_raw
+        else:
+            form = "form"
+        fields = raw.get("fields")
+        try:
+            if isinstance(fields, str):
+                fields = json.loads(fields)
+        except Exception:
+            fields = fields or []
+        n = len(fields) if isinstance(fields, (list, dict)) else 0
+        return f"Form submitted{who}: {_cap(form, 120)} ({n} fields)"
     if t == "fetch":
         return f"{raw.get('method', 'GET')} {_cap(raw.get('url', ''), 200)} → {raw.get('status', '?')}{who}"
     if t == "api_error":
@@ -179,7 +194,20 @@ def _enrich(event: dict, request: Request) -> dict:
     raw = event.get("raw") or {}
     form_raw = raw.get("form")
     fields = raw.get("fields")
-    if isinstance(form_raw, dict) or isinstance(fields, list) or raw.get("timing_ms") is not None:
+    if isinstance(fields, str):
+        try:
+            parsed_fields = json.loads(fields)
+        except Exception:
+            parsed_fields = []
+    else:
+        parsed_fields = fields or []
+    if isinstance(parsed_fields, dict):
+        parsed_fields = [
+            {"name": k, "filled": bool(v), "length": (len(v) if isinstance(v, str) else None)}
+            for k, v in parsed_fields.items()
+        ]
+
+    if isinstance(form_raw, dict) or isinstance(parsed_fields, list) and parsed_fields or raw.get("timing_ms") is not None:
         form_label = ""
         if isinstance(form_raw, dict):
             for key in ("id", "name"):
@@ -188,6 +216,8 @@ def _enrich(event: dict, request: Request) -> dict:
                     break
             if not form_label and form_raw.get("action"):
                 form_label = str(form_raw["action"])[:120]
+        elif isinstance(form_raw, str):
+            form_label = _cap(form_raw, 200)
         enriched["form"] = {
             "name": _cap(form_label, 200),
             "action": _cap(form_raw.get("action"), 300) if isinstance(form_raw, dict) else "",
@@ -203,12 +233,25 @@ def _enrich(event: dict, request: Request) -> dict:
                     "filled": bool(f.get("filled")),
                     "length": f.get("length"),
                 }
-                for f in (fields or [])
+                for f in (parsed_fields or [])
                 if isinstance(f, dict) and f.get("name")
             ][:50],
         }
 
     enriched["risk_score"] = max(enriched.get("risk_score", 0), 80) if enriched.get("threat_match") else enriched.get("risk_score", 0)
+
+    detections = classify_event(raw)
+    if detections:
+        labels, seen = [], set()
+        for m in detections:
+            label = m["category"].replace("_", " ").upper()
+            if label not in seen:
+                seen.add(label)
+                labels.append(label)
+        enriched["detected_attacks"] = ", ".join(labels)
+        enriched["detections"] = detections
+        enriched["risk_score"] = max(enriched.get("risk_score", 0), detections[0]["score"])
+
     event["enriched"] = enriched
     if not event.get("timestamp"):
         event["timestamp"] = datetime.now(timezone.utc).isoformat()

@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Check, Copy, Download, KeyRound, Loader2 } from 'lucide-react';
 import { api, getWebsiteKey } from '../lib/api';
+import { useProjectStore } from '../stores/projectStore';
 import { GenerateKeyModal } from '../components/keys/GenerateKeyModal';
 import { PageHeader } from '../components/ui/PageHeader';
 
 export function WebsiteSetupPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
   const [copied, setCopied] = useState(false);
   const [showKeyModal, setShowKeyModal] = useState(false);
 

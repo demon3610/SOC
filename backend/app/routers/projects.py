@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from app.database import get_db, get_next_id, NO_ID, all_events_collections
 from app.auth import get_current_user
 from app.models.project import ProjectCreate, ProjectUpdate, ProjectResponse
-from app.config import PUBLIC_BACKEND_URL
+from app.services.reachable import reachable_backend_url
 from app.services.prompt_templates import build_ai_agent_prompt, build_website_setup_prompt
 from app.services.elastic import delete_events_by_query, delete_agent_logs_by_query
 from app.dependencies import get_owned_project
@@ -94,11 +94,41 @@ def create_project(body: ProjectCreate, user=Depends(get_current_user), db=Depen
     )
 
 
+@router.get("/projects/current", summary="Get the user's currently-selected project")
+def current_project(user=Depends(get_current_user), db=Depends(get_db)):
+    """Return the selected project, self-healing a stale pointer.
+
+    If no project is selected (or the previously-selected one was deleted),
+    the stale value is cleared and a 404 "No project selected" is returned —
+    the frontend has exactly one case to handle (redirect to Workspace).
+
+    NOTE: must be registered BEFORE /projects/{project_id}, or the int
+    converter swallows "current" and the route 422s.
+    """
+    current_id = user.get("current_project_id")
+    if not current_id:
+        raise HTTPException(status_code=404, detail="No project selected")
+    project = db.projects.find_one({"id": current_id, "owner_id": user["id"]}, NO_ID)
+    if not project:
+        db.users.update_one({"id": user["id"]}, {"$unset": {"current_project_id": ""}})
+        raise HTTPException(status_code=404, detail="No project selected")
+    keys = list(db.api_keys.find({"project_id": project["id"]}, {"_id": 0, "key_hash": 0}))
+    agent_keys = list(db.agent_keys.find({"project_id": project["id"]}, {"_id": 0, "key_hash": 0}))
+    last_event = max(
+        [k.get("last_used_at") for k in keys if k.get("last_used_at")]
+        + [k.get("last_seen_at") for k in agent_keys if k.get("last_seen_at")],
+        default=None,
+    )
+    return ProjectResponse(
+        id=project["id"], owner_id=project["owner_id"], name=project["name"],
+        type=project["type"], description=project.get("description"),
+        created_at=project["created_at"], last_event_time=last_event,
+    )
+
+
 @router.get("/projects/{project_id}", summary="Get one project")
-def get_project(project_id: int, user=Depends(get_current_user), db=Depends(get_db)):
-    project = db.projects.find_one({"id": project_id}, NO_ID)
-    if not project or project["owner_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Project not found")
+def get_project(project=Depends(get_owned_project), db=Depends(get_db)):
+    project_id = project["id"]
     keys = list(db.api_keys.find({"project_id": project_id}, {"_id": 0, "key_hash": 0}))
     agent_keys = list(db.agent_keys.find({"project_id": project_id}, {"_id": 0, "key_hash": 0}))
     last_event = max(
@@ -113,16 +143,38 @@ def get_project(project_id: int, user=Depends(get_current_user), db=Depends(get_
     )
 
 
+@router.post("/projects/{project_id}/select", summary="Set the server-side current project for this session")
+def select_project(
+    user=Depends(get_current_user),
+    project=Depends(get_owned_project),
+    db=Depends(get_db),
+):
+    """Point this user's session at a project (ownership-gated by get_owned_project).
+
+    The response is the full project object, so the frontend can update its
+    store from this single call without a second round trip.
+    """
+    db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"current_project_id": project["id"]}},
+    )
+    return ProjectResponse(
+        id=project["id"], owner_id=project["owner_id"], name=project["name"],
+        type=project["type"], description=project.get("description"),
+        created_at=project["created_at"], last_event_time=project.get("last_event_time"),
+    )
+
+
 @router.delete("/projects/{project_id}", summary="Delete a project and all its data")
-def delete_project(project_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+def delete_project(project=Depends(get_owned_project), db=Depends(get_db)):
     """Removes the project plus its keys, events (all sources: website +
     windows + linux cover every agent entry incl. heartbeats/lifecycle)."""
-    project = db.projects.find_one({"id": project_id}, {"id": 1})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    proj = db.projects.find_one({"id": project_id}, NO_ID)
-    if proj["owner_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project_id = project["id"]
+    # Clear the server-side pointer if this was the user's selected project.
+    db.users.update_one(
+        {"id": project["owner_id"], "current_project_id": project_id},
+        {"$unset": {"current_project_id": ""}},
+    )
     pid_q = {"$in": [project_id, str(project_id)]}
     db.projects.delete_one({"id": project_id})
     db.api_keys.delete_many({"project_id": project_id})
@@ -139,34 +191,50 @@ def delete_project(project_id: int, user=Depends(get_current_user), db=Depends(g
 
 
 @router.get("/projects/{project_id}/integration-snippet", summary="Get website script tag + AI-agent prompt")
-def integration_snippet(project_id: int, user=Depends(get_current_user), db=Depends(get_db)):
-    """Returns the embeddable snippet for this project; keys are hashed at rest so the reveal happens at key creation."""
-    project = db.projects.find_one({"id": project_id}, NO_ID)
-    if not project or project["owner_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Project not found")
-    key = db.api_keys.find_one({"project_id": project_id, "revoked": False}, NO_ID)
+def integration_snippet(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    project=Depends(get_owned_project),
+    db=Depends(get_db),
+):
+    """Return the embeddable snippet for this project.
+
+    Keys are hashed at rest and only revealed once at creation, so the real
+    key must be supplied back here via the X-API-Key header (the browser
+    copy saved by the Generate-key modal). When it validates, the returned
+    script tag / prompt carry the real key and a reachable backend URL; a
+    missing or mismatched key returns 409 so the UI can prompt for key
+    generation instead of handing out a useless placeholder.
+    """
+    project_id = project["id"]
+    key = db.api_keys.find_one(
+        {"project_id": project_id, "revoked": False},
+        NO_ID,
+        sort=[("created_at", -1)],
+    )
     if not key:
-        raise HTTPException(status_code=400, detail="No active API key. Create one first.")
-    # Keys are stored hashed (one-time reveal), so the persistent view uses the
-    # same YOUR_API_KEY placeholder the script tag always has — the user pastes
-    # in the key they saved at generation time. The key-creation response
-    # carries the real key + fully-filled prompt.
+        raise HTTPException(status_code=409, detail="No active API key. Generate a Website Integration key first.")
+    if not x_api_key or _hash_key(x_api_key) != key["key_hash"]:
+        raise HTTPException(
+            status_code=409,
+            detail="The Website Integration key is stored hashed and revealed once when generated. Generate a key to get a working filled-in snippet.",
+        )
+    base_url = reachable_backend_url()
     script_tag = (
-        f'<script src="{PUBLIC_BACKEND_URL}/agents/usp.js" '
-        f'data-soc-key="YOUR_API_KEY" data-soc-host="{PUBLIC_BACKEND_URL}"></script>'
+        f'<script src="{base_url}/agents/usp.js" '
+        f'data-soc-key="{x_api_key}" data-soc-host="{base_url}"></script>'
     )
     return {
         "snippet": script_tag,
         "script_tag": script_tag,
-        "ai_agent_prompt": build_ai_agent_prompt(PUBLIC_BACKEND_URL, "YOUR_API_KEY"),
+        "ai_agent_prompt": build_ai_agent_prompt(base_url, x_api_key),
+        "backend_url": base_url,
     }
 
 
 @router.get("/projects/{project_id}/website-setup-prompt", summary="Full filled-in website integration prompt for the IDE agent page")
 def website_setup_prompt(
-    project_id: int,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-    user=Depends(get_current_user),
+    project=Depends(get_owned_project),
     db=Depends(get_db),
 ):
     """Return the complete Website Setup prompt with real values substituted.
@@ -177,9 +245,7 @@ def website_setup_prompt(
     existing key is reused, never regenerated. If the key is unavailable or no
     key exists, a 409 tells the frontend to prompt for key generation.
     """
-    project = db.projects.find_one({"id": project_id}, NO_ID)
-    if not project or project["owner_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project_id = project["id"]
     key = db.api_keys.find_one(
         {"project_id": project_id, "revoked": False}, NO_ID,
         sort=[("created_at", -1)],
@@ -194,5 +260,5 @@ def website_setup_prompt(
             status_code=409,
             detail="The Website Integration API key is stored hashed and is only revealed once when generated. Generate a new key to fill the prompt in with real values.",
         )
-    return {"prompt": build_website_setup_prompt(PUBLIC_BACKEND_URL, x_api_key)}
+    return {"prompt": build_website_setup_prompt(reachable_backend_url(), x_api_key)}
 

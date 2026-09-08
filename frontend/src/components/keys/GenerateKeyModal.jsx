@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Monitor, Terminal, Globe, Check, Copy, Download, Loader2, X } from 'lucide-react';
 import { api, saveWebsiteKey } from '../../lib/api';
 import { useToastStore } from '../../stores/toastStore';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 const PLATFORMS = [
   { id: 'windows', label: 'Windows Agent', icon: Monitor, desc: 'Connect the Windows monitoring agent.' },
@@ -18,26 +19,9 @@ export function GenerateKeyModal({ projectId, onClose, initialPlatform = null })
   const [scriptTag, setScriptTag] = useState('');
   const [aiAgentPrompt, setAiAgentPrompt] = useState('');
   const [snippetTab, setSnippetTab] = useState('script');
-  const [copied, setCopied] = useState(false);
-  const [snippetCopied, setSnippetCopied] = useState(false);
+  const [copied, copy] = useCopyToClipboard();
+  const [snippetCopied, copySnippet] = useCopyToClipboard();
   const addToast = useToastStore((s) => s.addToast);
-
-  const handleCopy = () => {
-    if (!generatedKey) return;
-    navigator.clipboard.writeText(generatedKey).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  const handleSnippetCopy = () => {
-    const text = snippetTab === 'script' ? scriptTag : aiAgentPrompt;
-    if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      setSnippetCopied(true);
-      setTimeout(() => setSnippetCopied(false), 2000);
-    });
-  };
 
   const resetModal = () => {
     onClose();
@@ -190,7 +174,7 @@ export function GenerateKeyModal({ projectId, onClose, initialPlatform = null })
                 <div className="flex items-start justify-between gap-3">
                   <p className="text-xs font-mono break-all select-all text-soc-text flex-1">{generatedKey}</p>
                   <button
-                    onClick={handleCopy}
+                    onClick={() => copy(generatedKey)}
                     className={`shrink-0 px-2 py-1 text-xs rounded transition-all duration-200 flex items-center gap-1.5 ${
                       copied
                         ? 'bg-green-600/12 text-green-700 border border-green-600/25'
@@ -236,7 +220,7 @@ export function GenerateKeyModal({ projectId, onClose, initialPlatform = null })
                         {scriptTag}
                       </pre>
                       <button
-                        onClick={handleSnippetCopy}
+                        onClick={() => copySnippet(snippetTab === 'script' ? scriptTag : aiAgentPrompt)}
                         className={`mt-2 text-xs px-3 py-1.5 rounded transition-all duration-200 ${
                           snippetCopied
                             ? 'bg-green-600/12 text-green-700 border border-green-600/25'
@@ -256,7 +240,7 @@ export function GenerateKeyModal({ projectId, onClose, initialPlatform = null })
                         {aiAgentPrompt}
                       </pre>
                       <button
-                        onClick={handleSnippetCopy}
+                        onClick={() => copySnippet(snippetTab === 'script' ? scriptTag : aiAgentPrompt)}
                         className={`mt-2 text-xs px-3 py-1.5 rounded transition-all duration-200 ${
                           snippetCopied
                             ? 'bg-green-600/12 text-green-700 border border-green-600/25'

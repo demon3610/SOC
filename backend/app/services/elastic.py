@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # not transport-level backoff that can block a worker thread for 15-30s.
 es_kwargs = {"request_timeout": 2, "retry_on_timeout": False, "max_retries": 0}
 if ES_USERNAME and ES_PASSWORD:
-    es_kwargs["http_auth"] = (ES_USERNAME, ES_PASSWORD)
+    es_kwargs["basic_auth"] = (ES_USERNAME, ES_PASSWORD)
 
 es = Elasticsearch(ELASTICSEARCH_HOSTS, **es_kwargs)
 
@@ -184,11 +184,13 @@ def get_event_by_id(event_id: str):
     if not _es_up():
         return None
     try:
-        resp = es.get(index=ELASTICSEARCH_INDEX, id=event_id, ignore=404)
+        resp = es.get(index=ELASTICSEARCH_INDEX, id=event_id)
         if not resp.get("found"):
             return None
         return {"id": resp["_id"], **resp["_source"]}
-    except Exception:
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404 or "NotFoundError" in type(exc).__name__:
+            return None
         logger.warning("get_event_by_id failed (ES may be down)")
         return None
 

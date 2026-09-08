@@ -45,4 +45,8 @@ def logout(response: Response):
 
 @router.get("/me", summary="Get the current user's profile")
 def me(user=Depends(get_current_user)):
-    return UserResponse(id=user["id"], email=user["email"], name=user["name"], created_at=user["created_at"])
+    return UserResponse(
+        id=user["id"], email=user["email"], name=user["name"],
+        created_at=user["created_at"],
+        current_project_id=user.get("current_project_id"),
+    )

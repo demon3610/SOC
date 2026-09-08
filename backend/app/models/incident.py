@@ -13,7 +13,6 @@ class IncidentCreate(BaseModel):
 class IncidentUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    mitigation: Optional[str] = None
     severity: Optional[str] = None
     status: Optional[str] = None
     assigned_to: Optional[int] = None
@@ -24,7 +23,7 @@ class IncidentResponse(BaseModel):
     project_id: int
     title: str
     description: Optional[str] = None
-    mitigation: Optional[str] = None
+    mitigation: Optional[list] = None
     severity: str
     status: str
     assigned_to: Optional[int] = None
@@ -36,3 +35,5 @@ class IncidentResponse(BaseModel):
     affected_ips: list[str] = []
     risk_score: Optional[float] = None
     risk_average: Optional[float] = None
+    mitre_tags: list[dict] = []
+    primary_ip: Optional[str] = None

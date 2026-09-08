@@ -32,6 +32,10 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/ingest': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 });

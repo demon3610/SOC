@@ -3,15 +3,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.database import get_db, NO_ID, all_events_collections, agent_events_collections, EVENTS_VIEW_COND
 from app.auth import get_current_user
+from app.dependencies import get_owned_project
 from app.services.elastic import _es_up
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-
-def _check_project(project_id: int, user, db):
-    project = db.projects.find_one({"id": project_id}, NO_ID)
-    if not project or project["owner_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Project not found")
 
 
 def _parse_ts(v):
@@ -27,12 +22,11 @@ def _parse_ts(v):
 
 @router.get("/projects/{project_id}/overview", summary="Dashboard overview stats for a project")
 def project_overview(
-    project_id: int,
     hours: int = Query(24),
-    user=Depends(get_current_user),
+    project=Depends(get_owned_project),
     db=Depends(get_db),
 ):
-    _check_project(project_id, user, db)
+    project_id = project["id"]
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=hours)
     pid_q = {"$in": [project_id, str(project_id)]}
@@ -76,7 +70,7 @@ def project_overview(
     last_heartbeat = None
     for col in agent_events_collections():
         hb = col.find_one(
-            {"category": "heartbeat"}, {"timestamp": 1},
+            {"project_id": pid_q, "category": "heartbeat"}, {"timestamp": 1},
             sort=[("timestamp", -1)],
         )
         if hb and (last_heartbeat is None or str(hb.get("timestamp", "")) > str(last_heartbeat.get("timestamp", ""))):

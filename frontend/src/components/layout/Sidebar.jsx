@@ -131,10 +131,7 @@ export function Sidebar() {
           const to =
             item.path === "/workspace"
               ? "/workspace"
-              : currentProjectId
-                ? `/projects/${currentProjectId}/${item.path}`
-                : null;
-          if (!to) return null;
+              : `/${item.path}`;
           return (
             <NavItem
               key={item.path}

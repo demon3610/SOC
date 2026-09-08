@@ -43,7 +43,7 @@ export const useAuthStore = create((set) => ({
   },
 
   login: async (email, password) => {
-    set({ error: null, loading: true });
+    set({ error: null });
     try {
       const res = await api.auth.login({ email, password });
       const token = res.token;
@@ -70,7 +70,7 @@ export const useAuthStore = create((set) => ({
   },
 
   register: async (email, password, name) => {
-    set({ error: null, loading: true });
+    set({ error: null });
     try {
       const res = await api.auth.register({ email, password, name });
       const token = res.token;

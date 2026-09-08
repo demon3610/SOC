@@ -44,6 +44,50 @@ async def lifespan(app: FastAPI):
     yield
 
 
+class _IngestOpenCORS:
+    """Allow-all CORS on /ingest/* only (key-authenticated, no cookies).
+
+    A monitored website is by definition a different origin from the SOC
+    console, so the global credentialed CORSMiddleware allow-list
+    (CORS_ORIGINS, e.g. the dev UI on :5173) silently drops every browser
+    POST from real client sites. Ingest is authenticated by API key
+    (header/query/body), never by browser cookies, so echoing an all-origin
+    allow here is safe: no credentials are exchanged.
+    """
+
+    _STAR = b"*"
+    _PREFIX = "/ingest"
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith(self._PREFIX):
+            return await self.app(scope, receive, send)
+
+        if scope["method"] == "OPTIONS":
+            headers = [
+                (b"access-control-allow-origin", self._STAR),
+                (b"access-control-allow-methods", self._STAR),
+                (b"access-control-allow-headers", self._STAR),
+                (b"access-control-max-age", b"600"),
+                (b"content-length", b"0"),
+            ]
+            await send({"type": "http.response.start", "status": 204, "headers": headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                if not any(h[0] == b"access-control-allow-origin" for h in headers):
+                    headers.append((b"access-control-allow-origin", self._STAR))
+                message = dict(message, headers=headers)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 app = FastAPI(title="SOC Platform", lifespan=lifespan)
 
 app.add_middleware(
@@ -53,6 +97,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(_IngestOpenCORS)
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -70,7 +116,10 @@ app.include_router(ws_router)
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc: Exception):
     logger.exception("Unhandled exception: %s", exc)
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    headers = None
+    if request.url.path.startswith("/ingest"):
+        headers = {"Access-Control-Allow-Origin": "*"}
+    return JSONResponse(status_code=500, content={"detail": str(exc)}, headers=headers)
 
 
 @app.get("/", include_in_schema=False)

@@ -96,8 +96,15 @@ def ensure_indexes():
     db.incident_evidence.create_index("incident_id")
     db.threat_indicators.create_index([("project_id", 1), ("source", 1)])
     db.threat_indicators.create_index([("project_id", 1), ("value", 1)], unique=True)
-    db.threat_feed_cache.create_index("value", unique=True)
+    # Multi-feed cache: an IP may legitimately appear in several feeds, so the
+    # uniqueness is per (value, source_feed), not per value alone.
+    try:
+        db.threat_feed_cache.drop_index("value_1")
+    except Exception:
+        pass  # index never existed on fresh installs
+    db.threat_feed_cache.create_index([("value", 1), ("source_feed", 1)], unique=True)
     db.audit_log.create_index([("project_id", 1), ("executed_at", -1)])
+    db.audit_log.create_index([("entity_type", 1), ("incident_id", 1), ("timestamp", 1)])
     for source in EVENTS_SOURCES:
         db[f"events_{source}"].create_index(
             [("project_id", 1), ("timestamp", -1)]

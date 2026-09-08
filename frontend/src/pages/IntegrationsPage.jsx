@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { KeyRound } from 'lucide-react';
 import { api } from '../lib/api';
+import { useProjectStore } from '../stores/projectStore';
 import { PageHeader } from '../components/ui/PageHeader';
+import { GenerateKeyModal } from '../components/keys/GenerateKeyModal';
 
 const WIN_CMD = (serverUrl) =>
   `powershell -NoProfile -ExecutionPolicy Bypass -Command "& { irm ${serverUrl}/install.ps1 -OutFile $env:TEMP\\soc-install.ps1; & $env:TEMP\\soc-install.ps1 -ApiKey YOUR_AGENT_KEY -ApiBase ${serverUrl}; Remove-Item $env:TEMP\\soc-install.ps1 }"`;
@@ -12,8 +15,8 @@ const LINUX_CMD = (serverUrl) =>
 
 
 export function IntegrationsPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const pid = activeProject?.id;
   const [platform, setPlatform] = useState('website');
   const [systemTab, setSystemTab] = useState('windows');
   const [snippetTab, setSnippetTab] = useState('script');
@@ -21,10 +24,11 @@ export function IntegrationsPage() {
   const [serverUrl, setServerUrl] = useState(
     window.location.protocol.startsWith('http')
       ? `${window.location.protocol}//${window.location.hostname}:8000`
-      : 'http://192.168.1.92:8000'
+      : 'http://localhost:8000'
   );
+  const [showKeyModal, setShowKeyModal] = useState(false);
 
-  const { data: snippetData, isLoading, isError, error } = useQuery({
+  const { data: snippetData, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['integration-snippet', pid],
     queryFn: () => api.projects.integrationSnippet(pid),
     enabled: !!pid && platform === 'website',
@@ -102,10 +106,19 @@ export function IntegrationsPage() {
           ) : isError || !snippetData ? (
             <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg">
               <p className="text-xs text-amber-600">
-                {error?.message || 'No active API key yet.'} Create one on the{' '}
-                <Link to={`/projects/${pid}/api-keys`} className="text-soc-accent underline">API Keys</Link> page
-                to get a script tag or AI-agent prompt for this project.
+                {error?.message || 'No usable Website Integration API key yet.'}
               </p>
+              <p className="text-xs text-soc-muted mt-1">
+                Website keys are hashed and only revealed once, so a filled-in
+                snippet needs a key you generate here.
+              </p>
+              <button
+                onClick={() => setShowKeyModal(true)}
+                className="mt-3 inline-flex items-center gap-1.5 text-xs bg-soc-accent hover:bg-soc-accent-glow text-soc-on-accent px-3 py-1.5 rounded-lg transition-all duration-200"
+              >
+                <KeyRound size={12} />
+                Generate Website API Key
+              </button>
             </div>
           ) : (
             <>
@@ -159,7 +172,7 @@ export function IntegrationsPage() {
                     : 'bg-soc-panel hover:bg-soc-panel'
                 }`}
               >
-                {copied ? '✓ Copied!' : `Copy ${snippetTab === 'script' ? 'script tag' : 'prompt'}`}
+                {copied ? '✔ Copied!' : `Copy ${snippetTab === 'script' ? 'script tag' : 'prompt'}`}
               </button>
             </>
           )
@@ -168,7 +181,7 @@ export function IntegrationsPage() {
             <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg">
               <p className="text-xs text-amber-600">
                 Replace <code className="bg-soc-code px-1 rounded">YOUR_AGENT_KEY</code> with a key from the{' '}
-                <Link to={`/projects/${pid}/api-keys`} className="text-soc-accent underline">API Keys</Link> page.
+                <Link to={`/api-keys`} className="text-soc-accent underline">API Keys</Link> page.
               </p>
             </div>
             <div>
@@ -193,12 +206,25 @@ export function IntegrationsPage() {
                     : 'bg-soc-panel hover:bg-soc-panel'
                 }`}
               >
-                {copied ? '✓ Copied!' : 'Copy'}
+                {copied ? '✔ Copied!' : 'Copy'}
               </button>
             </div>
           </>
         )}
       </div>
+
+      {showKeyModal && (
+        <GenerateKeyModal
+          projectId={pid}
+          initialPlatform="website"
+          onClose={() => {
+            setShowKeyModal(false);
+            setCopied(false);
+            setSnippetTab('script');
+            refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
